@@ -47,6 +47,33 @@ docker compose up -d --build
 
 All configuration lives in `.env` — see [.env.example](.env.example) for every option.
 
+### Testing on macOS
+
+ColdVault targets Debian, but a macOS compose variant is included for local testing
+(the only real difference: macOS mounts USB/external drives under `/Volumes`, which
+is mapped to `/media` inside the container so the canary workflow behaves exactly
+like production):
+
+```bash
+cp .env.example .env    # fill in AWS keys, region, bucket
+docker compose -f docker-compose.mac.yml up -d --build
+# open http://localhost:9999
+```
+
+Trigger the canary flow by plugging in a drive and creating the canary file:
+
+```bash
+touch /Volumes/YOUR_DRIVE/coldvault.canary
+```
+
+Remember that auto-upload sends **everything on that drive** to Deep Archive
+(180-day minimum storage charge per object) — test with a drive containing only a
+small folder, or set `COLDVAULT_AUTO_UPLOAD=false` and use manual upload instead.
+For manual-upload tests from a regular folder, see the commented `testdata` mount
+in [docker-compose.mac.yml](docker-compose.mac.yml). Use `-f docker-compose.mac.yml`
+on every compose command (including `down`), and note the Mac keeps its own
+independent `./data` index database.
+
 ### Verify it works
 
 Open the dashboard and click **Test AWS connection** (runs `sts get-caller-identity` +
