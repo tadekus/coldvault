@@ -1,0 +1,25 @@
+# macOS testing variant — run with:
+#   docker compose -f docker-compose.mac.yml up -d --build
+#
+# Differences from the Debian setup: USB/external drives on macOS mount under
+# /Volumes, which is mapped to /media inside the container so the watcher and
+# canary workflow behave exactly like production.
+services:
+  coldvault:
+    build: .
+    container_name: coldvault-mac
+    env_file: .env
+    environment:
+      COLDVAULT_PORT: 9999
+      COLDVAULT_WATCH_DIRS: /media
+    ports:
+      - "${COLDVAULT_PORT:-9999}:9999"
+    volumes:
+      - ./data:/data
+      - /Volumes:/media:ro
+      # Optional: a local folder for manual-upload tests. Uncomment both the
+      # mount and the browse root:
+      # - ${HOME}/coldvault-test:/testdata:ro
+      # and add under environment:
+      #   COLDVAULT_BROWSE_ROOTS: /testdata
+    restart: unless-stopped
