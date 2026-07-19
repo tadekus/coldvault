@@ -1,0 +1,21 @@
+services:
+  coldvault:
+    build: .
+    container_name: coldvault
+    env_file: .env
+    environment:
+      # Fixed internal port; change the host port via COLDVAULT_PORT in .env
+      COLDVAULT_PORT: 9999
+    ports:
+      - "${COLDVAULT_PORT:-9999}:9999"
+    volumes:
+      # Persistent index database + logs
+      - ./data:/data
+      # Debian automounts USB/external drives under /media/<user>/<label>
+      - /media:/media:ro
+      # Extra source locations for manual uploads (must also be listed in
+      # COLDVAULT_BROWSE_ROOTS in .env). Keep the same path on both sides
+      # so paths typed in the UI match:
+      - /tank/nextcloud/data/tadek/files:/tank/nextcloud/data/tadek/files:ro
+      # - /mnt:/mnt:ro
+    restart: unless-stopped

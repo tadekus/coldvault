@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ColdVault</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>❄</text></svg>">
+</head>
+<body>
+<header>
+  <div class="brand">❄ Cold<span>Vault</span></div>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="files">Index</button>
+    <button class="tab" data-tab="sessions">Sessions</button>
+    <button class="tab" data-tab="restores">Restores</button>
+    <button class="tab" data-tab="logs">Logs</button>
+  </nav>
+  <div class="bucket" id="bucketBadge">—</div>
+</header>
+
+<main>
+
+<!-- ================= DASHBOARD ================= -->
+<section id="tab-dashboard" class="panel active">
+  <div class="cards" id="statCards"></div>
+
+  <div class="grid2">
+    <div class="box">
+      <h3>Watcher</h3>
+      <div id="watcherInfo" class="kv"></div>
+      <h4>Active drives</h4>
+      <div id="activeMounts" class="muted">none</div>
+    </div>
+    <div class="box">
+      <h3>Connection</h3>
+      <div id="connInfo" class="kv"></div>
+      <div class="row">
+        <button id="btnTest">Test AWS connection</button>
+        <button id="btnSync" class="secondary">Import bucket → index</button>
+      </div>
+      <div class="row">
+        <button id="btnListBuckets" class="secondary">List buckets</button>
+        <select id="bucketSelect" style="display:none;flex:1"></select>
+        <button id="btnUseBucket" style="display:none">Use this bucket</button>
+      </div>
+      <div id="testResult" class="muted"></div>
+    </div>
+  </div>
+
+  <div class="box">
+    <h3>Manual upload</h3>
+    <div class="row">
+      <input id="uploadPath" placeholder="/media/user/MyDrive or subfolder" style="flex:2">
+      <input id="uploadLabel" placeholder="label (optional, default = folder name)" style="flex:1">
+      <button id="btnBrowse" class="secondary">Browse</button>
+      <button id="btnUpload">Start upload</button>
+    </div>
+    <div id="browseList" class="browse"></div>
+  </div>
+</section>
+
+<!-- ================= INDEX / SEARCH ================= -->
+<section id="tab-files" class="panel">
+  <div class="row toolbar">
+    <input id="search" placeholder="Search keys… e.g. Movie_Project Day_01 .RAW" style="flex:2">
+    <select id="bucketFilter" title="bucket"></select>
+    <select id="statusFilter">
+      <option value="">any status</option>
+      <option value="verified">verified</option>
+      <option value="uploading">uploading</option>
+      <option value="failed">failed</option>
+      <option value="remote">remote (imported)</option>
+    </select>
+    <button id="btnSearch">Search</button>
+  </div>
+  <div class="row toolbar restorebar">
+    <span id="selCount" class="muted">0 selected</span>
+    <select id="restoreTier">
+      <option value="Bulk">Bulk (~48h, cheapest)</option>
+      <option value="Standard">Standard (~12h)</option>
+    </select>
+    <label>days <input id="restoreDays" type="number" value="7" min="1" max="365" style="width:70px"></label>
+    <button id="btnRestore">Request restore</button>
+    <span class="spacer"></span>
+    <span id="filesSummary" class="muted"></span>
+  </div>
+  <div class="tablewrap">
+    <table id="filesTable">
+      <thead><tr>
+        <th><input type="checkbox" id="selAll"></th>
+        <th>Bucket</th><th>Key</th><th>Size</th><th>Status</th><th>Restore</th><th>Uploaded</th><th>Speed</th><th>SHA-256</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="row pager">
+    <button id="prevPage" class="secondary">‹ Prev</button>
+    <span id="pageInfo" class="muted"></span>
+    <button id="nextPage" class="secondary">Next ›</button>
+  </div>
+</section>
+
+<!-- ================= SESSIONS ================= -->
+<section id="tab-sessions" class="panel">
+  <div class="tablewrap">
+    <table id="sessionsTable">
+      <thead><tr>
+        <th>#</th><th>Source</th><th>Bucket</th><th>Label</th><th>Trigger</th><th>Status</th>
+        <th>Progress</th><th>Uploaded</th><th>Skipped</th><th>Failed</th><th>Started</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= RESTORES ================= -->
+<section id="tab-restores" class="panel">
+  <div class="row toolbar">
+    <button id="btnRefreshRestores">Check status now</button>
+    <span id="restoreMsg" class="muted"></span>
+  </div>
+  <div class="tablewrap">
+    <table id="restoresTable">
+      <thead><tr>
+        <th>Bucket</th><th>Key</th><th>Tier</th><th>Days</th><th>Status</th><th>Requested</th>
+        <th>Last checked</th><th>Available until</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= LOGS ================= -->
+<section id="tab-logs" class="panel">
+  <div class="row toolbar">
+    <select id="logLevel">
+      <option value="">all levels</option>
+      <option>INFO</option><option>WARNING</option><option>ERROR</option><option>DEBUG</option>
+    </select>
+    <select id="logCategory">
+      <option value="">all categories</option>
+      <option>upload</option><option>watcher</option><option>restore</option>
+      <option>aws</option><option>app</option>
+    </select>
+    <input id="logSearch" placeholder="filter…" style="flex:1">
+    <button id="btnLogs">Refresh</button>
+    <label class="muted"><input type="checkbox" id="logAuto" checked> auto</label>
+  </div>
+  <div class="tablewrap">
+    <table id="logsTable">
+      <thead><tr><th>Time (UTC)</th><th>Level</th><th>Cat</th><th>Message</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
