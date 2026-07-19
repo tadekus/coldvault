@@ -159,6 +159,26 @@ Deep Archive objects must be restored before they can be downloaded:
 4. Once `completed`, download with e.g.
    `aws s3api get-object --bucket <bucket> --key <key> <outfile>`.
 
+### Restore from an edit (XML / AAF)
+
+Instead of hand-picking objects, upload an editorial exchange file in the **Index**
+tab (**Match edit list**) and ColdVault gathers every media file the edit references
+and prepares the batch restore:
+
+- **Final Cut Pro 7 / Premiere Pro XML** (`.xml`, xmeml — `<pathurl>` references)
+- **FCPXML** (`.fcpxml` — Final Cut Pro X / DaVinci Resolve, `<media-rep src=…>`
+  references)
+- **Avid AAF** (`.aaf` — parsed with pyaaf2, reading each SourceMob's
+  NetworkLocator; falls back to a raw string scan for unusual AAFs)
+
+Because the paths inside an edit point at the editor's local volumes, matching is
+done **by filename** (case-insensitive) against the index — which works because
+camera-original names (`A001_C001.RAW`, `A035C014_260625I0.mxf`, …) are unique per
+production. All matched objects are added to the selection (scoped to the bucket
+chosen in the bucket filter, or all buckets), anything the index doesn't contain is
+listed as *not found*, and one click on **Request restore** sends the batch
+(Standard or Bulk). The parse result is logged like everything else.
+
 ## Performance tuning
 
 A single S3 PUT stream tops out around 20–40 MB/s. ColdVault parallelizes at two

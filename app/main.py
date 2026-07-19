@@ -1,10 +1,12 @@
 import os
+import tempfile
 
 from flask import Flask, jsonify, render_template, request
 
 import awsapi
 import config
 import db
+import editlist
 import restore
 import uploader as uploader_mod
 import watcher as watcher_mod
@@ -154,6 +156,43 @@ def api_files():
                         "expiry": r["expiry"]} if r else None
     return jsonify({"total": total, "total_bytes": total_bytes, "items": items,
                     "buckets": db.distinct_buckets(), "active": config.BUCKET})
+
+
+@app.post("/api/editlist")
+def api_editlist():
+    """Upload an edit file (xmeml/fcpxml/AAF), extract referenced media names,
+    and match them against the index for a batch restore."""
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "no file uploaded"}), 400
+    bucket = request.form.get("bucket") or config.BUCKET
+    if bucket == "*":
+        bucket = None
+    fd, tmp = tempfile.mkstemp(dir=config.TMP_DIR, suffix=".editlist")
+    os.close(fd)
+    try:
+        upload.save(tmp)
+        fmt, refs = editlist.parse_edit(tmp, upload.filename)
+    except Exception as e:
+        return jsonify({"error": f"could not parse {upload.filename}: {e}"}), 400
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    matched, unmatched = [], []
+    for name in sorted(refs):
+        rows = db.match_files_by_name(bucket, name)
+        if rows:
+            matched.append({"ref": name, "source": refs[name], "files": rows})
+        else:
+            unmatched.append({"ref": name, "source": refs[name]})
+    log_event("INFO", "editlist",
+              f"parsed {upload.filename} ({fmt}): {len(refs)} media refs — "
+              f"{len(matched)} matched in index, {len(unmatched)} not found"
+              + (f" (bucket {bucket})" if bucket else " (all buckets)"))
+    return jsonify({"format": fmt, "total_refs": len(refs),
+                    "matched": matched, "unmatched": unmatched})
 
 
 @app.get("/api/sessions")

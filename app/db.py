@@ -269,6 +269,18 @@ def search_files(bucket=None, q=None, status=None, session_id=None, limit=100, o
     return total["c"], total["b"], items
 
 
+def match_files_by_name(bucket, name):
+    """Find indexed objects whose filename (last key segment) equals name,
+    case-insensitively. bucket=None searches every bucket."""
+    esc = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    where = "WHERE (key LIKE ? ESCAPE '\\' OR key = ? COLLATE NOCASE)"
+    params = [f"%/{esc}", name]
+    if bucket:
+        where += " AND bucket = ?"
+        params.append(bucket)
+    return _rows(f"SELECT bucket, key, size, status FROM files {where} LIMIT 20", params)
+
+
 def distinct_buckets():
     return [r["bucket"] for r in _rows(
         "SELECT DISTINCT bucket FROM files ORDER BY bucket")]

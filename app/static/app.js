@@ -266,6 +266,41 @@ $("#btnRestore").onclick = async () => {
   }
 };
 
+/* ---------- edit list (XML/AAF) matching ---------- */
+$("#btnEditList").onclick = async () => {
+  const f = $("#editFile").files[0];
+  if (!f) return alert("Choose an XML, FCPXML or AAF file first");
+  $("#editSummary").textContent = "parsing…";
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("bucket", $("#bucketFilter").value || "");
+  try {
+    const resp = await fetch("/api/editlist", { method: "POST", body: fd });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    let added = 0;
+    data.matched.forEach(m => m.files.forEach(x => {
+      if (!selected.has(selId(x.bucket, x.key))) added++;
+      selected.add(selId(x.bucket, x.key));
+    }));
+    updateSelCount();
+    $("#editSummary").textContent =
+      `${data.format}: ${data.total_refs} media refs — ${data.matched.length} matched ` +
+      `(${added} objects added to selection), ${data.unmatched.length} not found`;
+    const res = $("#editResults");
+    if (data.unmatched.length) {
+      res.style.display = "";
+      res.innerHTML = `<b style="color:var(--warn)">Not found in index (${data.unmatched.length}):</b> ` +
+        data.unmatched.map(u => `<code title="${esc(u.source)}">${esc(u.ref)}</code>`).join(", ");
+    } else {
+      res.style.display = "none";
+    }
+    loadFiles();
+  } catch (e) {
+    $("#editSummary").textContent = "✘ " + e.message;
+  }
+};
+
 /* ---------- sessions ---------- */
 async function loadSessions() {
   const rows = await api("/api/sessions");

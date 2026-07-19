@@ -75,6 +75,12 @@
     </select>
     <button id="btnSearch">Search</button>
   </div>
+  <div class="row toolbar">
+    <input type="file" id="editFile" accept=".xml,.fcpxml,.aaf" style="flex:1">
+    <button id="btnEditList">Match edit list (XML/AAF)</button>
+    <span id="editSummary" class="muted"></span>
+  </div>
+  <div id="editResults" class="box" style="display:none"></div>
   <div class="row toolbar restorebar">
     <span id="selCount" class="muted">0 selected</span>
     <select id="restoreTier">
