@@ -86,6 +86,49 @@ the choice is persisted and overrides `.env`. If your bucket already contains da
 click **Import bucket → index** to pull the existing object list into the local index
 (imported objects show as `remote`).
 
+## Running, restarting and updating
+
+Everything below is run from the ColdVault folder (e.g. `~/coldvault`). On macOS add
+`-f docker-compose.mac.yml` to every command.
+
+```bash
+# restart (after changing .env, or if it got stuck)
+docker compose restart
+
+# stop / start
+docker compose down
+docker compose up -d
+
+# update to the latest version from GitHub, then rebuild and restart
+git pull
+docker compose up -d --build
+
+# follow the logs
+docker compose logs -f
+# ...or the app's own rotating log
+tail -f data/coldvault.log
+
+# status
+docker compose ps
+```
+
+Notes:
+
+- `docker compose restart` reloads `.env`, but **volume changes in
+  `docker-compose.yml` need `docker compose up -d`** (recreates the container);
+  add `--force-recreate` if a change doesn't seem to take.
+- Rebuild with `--build` whenever the app code or `requirements.txt` changed —
+  i.e. after every `git pull`.
+- After an update, **hard-refresh the browser** (Ctrl+Shift+R, Cmd+Shift+R on macOS)
+  so the new UI assets load instead of the cached ones.
+- New releases sometimes add settings to `.env.example`. Compare it with your `.env`
+  after pulling: `diff <(sort .env.example) <(sort .env) | head -30` — anything
+  missing falls back to a sane default, so this is optional but worth a look.
+- Your `.env`, index database (`data/`) and downloaded files (`downloads/`) are
+  never touched by updates — they are git-ignored.
+- Uploads or downloads interrupted by a restart are marked failed and can simply be
+  re-run: verified files are skipped, so it resumes where it left off.
+
 ## The canary workflow
 
 1. Create the canary file in the **root** of the external drive:
