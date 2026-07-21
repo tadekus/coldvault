@@ -8,7 +8,8 @@ everything it does.
 ## Features
 
 - **Web UI** (default `http://localhost:9999`) — dashboard, searchable file index,
-  upload sessions with live progress and speed, restore management, live logs.
+  upload sessions with live progress and speed, restore management, verified
+  downloads of restored files, live logs.
 - **Canary-triggered ingest** — plug in an external drive containing a canary file
   (`coldvault.canary`) and its contents are automatically uploaded to your bucket.
   Works with Debian's `/media` automounts and macOS `/Volumes` alike.
@@ -34,6 +35,9 @@ everything it does.
   exact objects you need.
 - **Restore tracking** — restore requests are logged and polled via `head-object` until
   S3 reports the object is available, including its expiry date.
+- **Verified downloads** — restored objects are fetched back to a local folder with
+  their key structure preserved, using parallel ranged GETs for large files, and each
+  file's SHA-256 is checked against the index before it counts as `verified`.
 - **Everything logged** — every `aws` command, upload, skip, failure, canary event and
   restore transition goes to the UI log, a rotating log file (`data/coldvault.log`) and
   the SQLite events table.
@@ -156,8 +160,38 @@ Deep Archive objects must be restored before they can be downloaded:
    copy should stay available.
 3. Track progress in **Restores** — ColdVault polls S3 hourly (configurable), or click
    **Check status now**.
-4. Once `completed`, download with e.g.
-   `aws s3api get-object --bucket <bucket> --key <key> <outfile>`.
+4. Once `completed`, fetch the files in the **Downloads** tab (below).
+
+## Downloading restored files
+
+The **Downloads** tab lists every object whose restore has completed — i.e. everything
+downloadable right now — and pulls it back to a local folder:
+
+1. Set the destination (defaults to `COLDVAULT_DOWNLOAD_DIR`, `/downloads` in the
+   container) and optionally a subfolder per job, e.g. `SD13_conform`.
+2. Tick the objects you want, or **Select all restored**.
+3. **Download selected** — files are written under the destination preserving their
+   full S3 key as folders, so
+   `Movie_Project/Shooting_Day_01/Camera_A/Card_001/A001_C001.RAW` comes back as that
+   same directory tree.
+
+Every download is **checksum-verified**: after the transfer, the file's SHA-256 is
+compared against the value recorded in the index when it was uploaded, and only then
+marked `verified` (objects imported with **Import bucket → index** have no stored
+checksum, so they are marked `downloaded` instead). Size mismatches, unrestored
+objects and restores still in progress fail with an explicit message rather than
+leaving a corrupt file. Files already present locally with a matching size and
+checksum are skipped, so an interrupted job resumes cheaply.
+
+Large objects are fetched with **parallel ranged GETs**
+(`COLDVAULT_DOWNLOAD_PART_WORKERS`, default 4) written directly into the target file,
+mirroring the parallel multipart upload path. Progress, per-part speed and per-file
+speed appear in the session table and the log.
+
+> The download directory must be mounted **read-write** in docker-compose (unlike the
+> source volumes, which are read-only). The default maps `./downloads`; point it
+> anywhere you like, e.g. `- /tank/restores:/downloads`. Downloads are refused
+> outside this directory.
 
 ### Restore from an edit (XML / AAF)
 

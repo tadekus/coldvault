@@ -6,6 +6,7 @@ from flask import Flask, jsonify, render_template, request
 import awsapi
 import config
 import db
+import downloader as downloader_mod
 import editlist
 import restore
 import uploader as uploader_mod
@@ -16,6 +17,7 @@ from logs import log_event
 app = Flask(__name__)
 up = uploader_mod.Uploader()
 watch = watcher_mod.Watcher(up)
+down = downloader_mod.Downloader()
 
 # A bucket picked in the UI is persisted in the DB and overrides the .env value
 _saved_bucket = db.get_setting("bucket")
@@ -27,6 +29,10 @@ if _stale:
     log_event("WARNING", "app",
               f"marked {_stale} upload(s) interrupted by restart as failed — "
               f"re-run their session to retry")
+_stale_dl = db.fail_stale_downloads()
+if _stale_dl:
+    log_event("WARNING", "app",
+              f"marked {_stale_dl} download(s) interrupted by restart as failed")
 
 
 def _allowed_path(path):
@@ -247,6 +253,66 @@ def api_sync():
             added += 1
     log_event("INFO", "app", f"bucket sync: imported {added} objects not present in index")
     return jsonify({"imported": added, "listed": len(resp.get("Contents", []))})
+
+
+def _allowed_dest(path):
+    real = os.path.realpath(path)
+    root = os.path.realpath(config.DOWNLOAD_DIR)
+    return real == root or real.startswith(root.rstrip("/") + "/")
+
+
+@app.get("/api/restored")
+def api_restored():
+    """Objects whose latest restore completed — i.e. downloadable right now."""
+    items = db.restored_objects()
+    downloaded = db.completed_downloads_map()
+    for i in items:
+        i["downloaded_to"] = downloaded.get((i["bucket"], i["key"]))
+    return jsonify({"items": items, "download_dir": config.DOWNLOAD_DIR})
+
+
+@app.get("/api/download/browse")
+def api_download_browse():
+    path = request.args.get("path") or config.DOWNLOAD_DIR
+    if not _allowed_dest(path):
+        return jsonify({"error": f"path must be inside {config.DOWNLOAD_DIR}"}), 403
+    if not os.path.isdir(path):
+        return jsonify({"error": "not a directory"}), 400
+    try:
+        dirs = sorted(e.name for e in os.scandir(path) if e.is_dir(follow_symlinks=False))
+    except OSError as e:
+        return jsonify({"error": str(e)}), 400
+    parent = os.path.dirname(path.rstrip("/"))
+    return jsonify({"path": path, "parent": parent if _allowed_dest(parent) else None,
+                    "dirs": dirs})
+
+
+@app.post("/api/download")
+def api_download():
+    data = request.get_json(force=True)
+    dest = (data.get("dest") or config.DOWNLOAD_DIR).strip()
+    items = data.get("items") or []
+    if not items:
+        return jsonify({"error": "no objects selected"}), 400
+    if not _allowed_dest(dest):
+        return jsonify({"error": f"destination must be inside {config.DOWNLOAD_DIR}"}), 400
+    try:
+        os.makedirs(dest, exist_ok=True)
+    except OSError as e:
+        return jsonify({"error": f"cannot create destination: {e}"}), 400
+    if not os.access(dest, os.W_OK):
+        return jsonify({"error": f"destination not writable: {dest} — check the "
+                                 f"volume mount is read-write"}), 400
+    sid = down.enqueue(dest, items)
+    return jsonify({"session_id": sid})
+
+
+@app.get("/api/download/sessions")
+def api_download_sessions():
+    return jsonify({"sessions": db.list_dl_sessions(),
+                    "files": db.list_downloads(limit=300),
+                    "queue_size": down.queue_size(),
+                    "current_session": down.current_session})
 
 
 @app.get("/api/logs")

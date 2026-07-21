@@ -16,6 +16,8 @@ services:
       - "${COLDVAULT_PORT:-9999}:9999"
     volumes:
       - ./data:/data
+      # Restored files land here (read-write)
+      - ./downloads:/downloads
       - /Volumes:/media:ro
       # Optional: a local folder for manual-upload tests. Uncomment both the
       # mount and the browse root:

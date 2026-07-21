@@ -11,6 +11,9 @@ services:
     volumes:
       # Persistent index database + logs
       - ./data:/data
+      # Restored files are downloaded here (READ-WRITE). Point the left side
+      # anywhere you want the files to land, e.g. /tank/restores:/downloads
+      - ./downloads:/downloads
       # Debian automounts USB/external drives under /media/<user>/<label>
       - /media:/media:ro
       # Extra source locations for manual uploads (must also be listed in

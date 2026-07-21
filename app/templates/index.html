@@ -15,6 +15,7 @@
     <button class="tab" data-tab="files">Index</button>
     <button class="tab" data-tab="sessions">Sessions</button>
     <button class="tab" data-tab="restores">Restores</button>
+    <button class="tab" data-tab="downloads">Downloads</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
   <div class="bucket" id="bucketBadge">—</div>
@@ -132,6 +133,64 @@
       <thead><tr>
         <th>Bucket</th><th>Key</th><th>Tier</th><th>Days</th><th>Status</th><th>Requested</th>
         <th>Last checked</th><th>Available until</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= DOWNLOADS ================= -->
+<section id="tab-downloads" class="panel">
+  <div class="box">
+    <h3>Download restored objects</h3>
+    <div class="row">
+      <input id="destPath" placeholder="/downloads" style="flex:2">
+      <input id="destSub" placeholder="optional subfolder, e.g. SD13_conform" style="flex:1">
+      <button id="btnDestBrowse" class="secondary">Browse</button>
+      <button id="btnDownload">Download selected</button>
+    </div>
+    <div id="destBrowse" class="browse"></div>
+    <div class="muted" style="margin-top:6px">
+      Files are written under the destination preserving their full S3 key path
+      (bucket keys become folders). Already-downloaded, unchanged files are skipped,
+      and each file is checksum-verified against the index after download.
+    </div>
+  </div>
+
+  <div class="row toolbar restorebar">
+    <span id="dlSelCount" class="muted">0 selected</span>
+    <button id="btnDlSelAll" class="secondary">Select all restored</button>
+    <button id="btnDlRefresh" class="secondary">Refresh</button>
+    <span class="spacer"></span>
+    <span id="dlSummary" class="muted"></span>
+  </div>
+  <div class="tablewrap">
+    <table id="restoredTable">
+      <thead><tr>
+        <th><input type="checkbox" id="dlSelAllBox"></th>
+        <th>Bucket</th><th>Key</th><th>Size</th><th>Tier</th>
+        <th>Available until</th><th>Local copy</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin:18px 0 8px">Download sessions</h3>
+  <div class="tablewrap">
+    <table id="dlSessionsTable">
+      <thead><tr>
+        <th>#</th><th>Destination</th><th>Status</th><th>Progress</th>
+        <th>Done</th><th>Skipped</th><th>Failed</th><th>Started</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin:18px 0 8px">Downloaded files</h3>
+  <div class="tablewrap">
+    <table id="dlFilesTable">
+      <thead><tr>
+        <th>Key</th><th>Local path</th><th>Size</th><th>Status</th><th>Speed</th><th>Finished</th>
       </tr></thead>
       <tbody></tbody>
     </table>

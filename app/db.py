@@ -62,6 +62,36 @@ CREATE TABLE IF NOT EXISTS restores(
 );
 CREATE INDEX IF NOT EXISTS idx_restores_key ON restores(key);
 
+CREATE TABLE IF NOT EXISTS dl_sessions(
+  id INTEGER PRIMARY KEY,
+  dest TEXT,
+  status TEXT,              -- queued | running | done | done_with_errors | failed
+  started_at TEXT,
+  finished_at TEXT,
+  total_files INTEGER DEFAULT 0,
+  done_files INTEGER DEFAULT 0,
+  skipped_files INTEGER DEFAULT 0,
+  failed_files INTEGER DEFAULT 0,
+  total_bytes INTEGER DEFAULT 0,
+  done_bytes INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS downloads(
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER,
+  bucket TEXT,
+  key TEXT,
+  local_path TEXT,
+  size INTEGER,
+  status TEXT,              -- downloading | verified | downloaded | skipped | failed
+  error TEXT,
+  sha256 TEXT,
+  download_seconds REAL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_downloads_key ON downloads(bucket, key);
+CREATE INDEX IF NOT EXISTS idx_downloads_session ON downloads(session_id);
+
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
   value TEXT
@@ -310,6 +340,79 @@ def stats(bucket=None):
     sessions = _row("SELECT COUNT(*) c FROM sessions")["c"]
     active_restores = _row("SELECT COUNT(*) c FROM restores WHERE status='in_progress'")["c"]
     return {"files": by_status, "sessions": sessions, "active_restores": active_restores}
+
+
+# ---- downloads ----
+
+def create_dl_session(dest):
+    cur = _exec("INSERT INTO dl_sessions(dest, status, started_at) VALUES(?,?,?)",
+                (dest, "queued", now()))
+    return cur.lastrowid
+
+
+def update_dl_session(sid, **kw):
+    cols = ", ".join(f"{k}=?" for k in kw)
+    _exec(f"UPDATE dl_sessions SET {cols} WHERE id=?", (*kw.values(), sid))
+
+
+def bump_dl_session(sid, done=0, skipped=0, failed=0, bytes_done=0):
+    _exec("""UPDATE dl_sessions SET done_files=done_files+?, skipped_files=skipped_files+?,
+             failed_files=failed_files+?, done_bytes=done_bytes+? WHERE id=?""",
+          (done, skipped, failed, bytes_done, sid))
+
+
+def get_dl_session(sid):
+    return _row("SELECT * FROM dl_sessions WHERE id=?", (sid,))
+
+
+def list_dl_sessions(limit=50):
+    return _rows("SELECT * FROM dl_sessions ORDER BY id DESC LIMIT ?", (limit,))
+
+
+def add_download(session_id, bucket, key, local_path, size):
+    cur = _exec("""INSERT INTO downloads(session_id, bucket, key, local_path, size, status)
+                   VALUES(?,?,?,?,?,?)""",
+                (session_id, bucket, key, local_path, size, "downloading"))
+    return cur.lastrowid
+
+
+def update_download(did, **kw):
+    cols = ", ".join(f"{k}=?" for k in kw)
+    _exec(f"UPDATE downloads SET {cols} WHERE id=?", (*kw.values(), did))
+
+
+def list_downloads(session_id=None, limit=500):
+    if session_id:
+        return _rows("SELECT * FROM downloads WHERE session_id=? ORDER BY id DESC LIMIT ?",
+                     (session_id, limit))
+    return _rows("SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,))
+
+
+def completed_downloads_map():
+    """(bucket, key) -> local_path of the most recent successful download."""
+    rows = _rows("""SELECT bucket, key, local_path FROM downloads
+                    WHERE status IN ('verified','downloaded') ORDER BY id""")
+    return {(r["bucket"], r["key"]): r["local_path"] for r in rows}
+
+
+def fail_stale_downloads():
+    cur = _exec("UPDATE downloads SET status='failed', error='interrupted by restart' "
+                "WHERE status='downloading'")
+    return cur.rowcount
+
+
+def restored_objects():
+    """Objects whose most recent restore request completed, joined with what
+    the index knows about them (size, checksum)."""
+    return _rows("""
+        SELECT r.bucket, r.key, r.tier, r.expiry, r.requested_at,
+               f.size, f.sha256, f.status AS file_status
+        FROM restores r
+        JOIN (SELECT bucket, key, MAX(id) AS mid FROM restores GROUP BY bucket, key) t
+          ON r.id = t.mid
+        LEFT JOIN files f ON f.bucket = r.bucket AND f.key = r.key
+        WHERE r.status = 'completed'
+        ORDER BY r.bucket, r.key""")
 
 
 # ---- restores ----

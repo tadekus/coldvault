@@ -27,7 +27,8 @@ function fmtBytes(n) {
 const chip = s => s ? `<span class="chip ${esc(s)}">${esc(s)}</span>` : "—";
 
 /* ---------- tabs ---------- */
-const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions, restores: loadRestores, logs: loadLogs };
+const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
+                  restores: loadRestores, downloads: loadDownloads, logs: loadLogs };
 let activeTab = "dashboard";
 
 $$(".tab").forEach(b => b.onclick = () => {
@@ -40,7 +41,8 @@ $$(".tab").forEach(b => b.onclick = () => {
 });
 
 setInterval(() => {
-  if (activeTab === "dashboard" || activeTab === "sessions") loaders[activeTab]();
+  if (activeTab === "dashboard" || activeTab === "sessions" || activeTab === "downloads")
+    loaders[activeTab]();
   if (activeTab === "logs" && $("#logAuto").checked) loadLogs();
 }, 5000);
 
@@ -346,6 +348,122 @@ $("#btnRefreshRestores").onclick = async () => {
     loadRestores();
   } catch (e) {
     $("#restoreMsg").textContent = "✘ " + e.message;
+  }
+};
+
+/* ---------- downloads ---------- */
+const dlSelected = new Map();   // "bucket|key" -> {bucket, key, size, sha256}
+let restoredCache = [];
+
+function updateDlCount() {
+  $("#dlSelCount").textContent = `${dlSelected.size} selected`;
+}
+
+async function loadDownloads() {
+  const [r, s] = await Promise.all([
+    api("/api/restored"),
+    api("/api/download/sessions"),
+  ]);
+  restoredCache = r.items;
+  if (!$("#destPath").value) $("#destPath").value = r.download_dir;
+
+  $("#dlSummary").textContent =
+    `${r.items.length} restored object(s) available` +
+    (s.queue_size ? ` · ${s.queue_size} session(s) queued` : "") +
+    (s.current_session ? ` · session #${s.current_session} running` : "");
+
+  $("#restoredTable tbody").innerHTML = r.items.map(i => {
+    const id = selId(i.bucket, i.key);
+    return `<tr>
+      <td><input type="checkbox" class="dlsel" data-id="${esc(id)}" ${dlSelected.has(id) ? "checked" : ""}></td>
+      <td class="mono">${esc(i.bucket)}</td>
+      <td class="key">${esc(i.key)}</td>
+      <td class="num">${fmtBytes(i.size)}</td>
+      <td>${esc(i.tier || "—")}</td>
+      <td class="mono">${esc(i.expiry || "—")}</td>
+      <td class="mono">${i.downloaded_to ? "✔ " + esc(i.downloaded_to) : "—"}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted" style="padding:20px">
+      no completed restores yet — request restores in the Index tab, they appear here once S3 reports them ready</td></tr>`;
+
+  $$("#restoredTable .dlsel").forEach(cb => cb.onchange = () => {
+    const item = restoredCache.find(x => selId(x.bucket, x.key) === cb.dataset.id);
+    cb.checked ? dlSelected.set(cb.dataset.id, item) : dlSelected.delete(cb.dataset.id);
+    updateDlCount();
+  });
+
+  $("#dlSessionsTable tbody").innerHTML = s.sessions.map(d => {
+    const pct = d.total_bytes ? Math.round(100 * d.done_bytes / d.total_bytes)
+                              : (d.status === "done" ? 100 : 0);
+    return `<tr>
+      <td>${d.id}</td>
+      <td class="key">${esc(d.dest)}</td>
+      <td>${chip(d.status)}</td>
+      <td><div class="progress"><i style="width:${pct}%"></i></div>
+          <span class="mono">${d.done_files}/${d.total_files} files · ${fmtBytes(d.done_bytes)} / ${fmtBytes(d.total_bytes)} (${pct}%)</span></td>
+      <td class="num">${d.done_files}</td>
+      <td class="num">${d.skipped_files}</td>
+      <td class="num" ${d.failed_files ? 'style="color:var(--err)"' : ""}>${d.failed_files}</td>
+      <td class="mono">${esc(d.started_at || "")}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted" style="padding:20px">no download sessions yet</td></tr>`;
+
+  $("#dlFilesTable tbody").innerHTML = s.files.map(f => `<tr>
+      <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
+      <td class="mono">${esc(f.local_path || "—")}</td>
+      <td class="num">${fmtBytes(f.size)}</td>
+      <td>${chip(f.status)}</td>
+      <td class="num">${f.download_seconds && f.size ? fmtBytes(f.size / f.download_seconds) + "/s" : "—"}</td>
+      <td class="mono">${esc(f.finished_at || "—")}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted" style="padding:20px">nothing downloaded yet</td></tr>`;
+}
+
+$("#btnDlRefresh").onclick = loadDownloads;
+
+$("#dlSelAllBox").onchange = e => {
+  $$("#restoredTable .dlsel").forEach(cb => {
+    cb.checked = e.target.checked;
+    const item = restoredCache.find(x => selId(x.bucket, x.key) === cb.dataset.id);
+    cb.checked ? dlSelected.set(cb.dataset.id, item) : dlSelected.delete(cb.dataset.id);
+  });
+  updateDlCount();
+};
+
+$("#btnDlSelAll").onclick = () => {
+  restoredCache.forEach(i => dlSelected.set(selId(i.bucket, i.key), i));
+  updateDlCount();
+  loadDownloads();
+};
+
+async function browseDest(path) {
+  try {
+    const r = await api("/api/download/browse?path=" + encodeURIComponent(path || ""));
+    $("#destPath").value = r.path;
+    let html = "";
+    if (r.parent) html += `<a data-p="${esc(r.parent)}">⬑ up</a>`;
+    html += r.dirs.map(d => `<a data-p="${esc(r.path.replace(/\/$/, "") + "/" + d)}">📁 ${esc(d)}</a>`).join("");
+    $("#destBrowse").innerHTML = html || `<span class="muted">(no subfolders)</span>`;
+    $$("#destBrowse a").forEach(a => a.onclick = () => browseDest(a.dataset.p));
+  } catch (e) {
+    $("#destBrowse").innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
+  }
+}
+$("#btnDestBrowse").onclick = () => browseDest($("#destPath").value);
+
+$("#btnDownload").onclick = async () => {
+  if (!dlSelected.size) return alert("Select at least one restored object");
+  const base = $("#destPath").value.trim();
+  const sub = $("#destSub").value.trim().replace(/^\/+|\/+$/g, "");
+  const dest = sub ? base.replace(/\/$/, "") + "/" + sub : base;
+  if (!confirm(`Download ${dlSelected.size} object(s) to ${dest}?`)) return;
+  try {
+    const r = await api("/api/download", { body: { dest, items: [...dlSelected.values()] } });
+    alert(`Download session #${r.session_id} queued`);
+    dlSelected.clear();
+    updateDlCount();
+    loadDownloads();
+  } catch (e) {
+    alert("✘ " + e.message);
   }
 };
 
