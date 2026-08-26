@@ -42,6 +42,24 @@ def s3api(*args, **kw):
     return aws("s3api", *args, **kw)
 
 
+def list_all_objects(bucket, prefix="", timeout=600):
+    """Yield every object dict in a bucket, following pagination tokens
+    (list-objects-v2 returns at most 1000 keys per call)."""
+    token = None
+    while True:
+        args = ["list-objects-v2", "--bucket", bucket, "--max-items", "1000"]
+        if prefix:
+            args += ["--prefix", prefix.rstrip("/") + "/"]
+        if token:
+            args += ["--starting-token", token]
+        resp = s3api(*args, timeout=timeout, log=False)
+        for obj in resp.get("Contents", []):
+            yield obj
+        token = resp.get("NextToken")
+        if not token:
+            break
+
+
 def quiet_abort(bucket, key, upload_id):
     """Best-effort abort of a multipart upload; never raises."""
     try:

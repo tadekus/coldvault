@@ -33,6 +33,10 @@ everything it does.
   key, select individual objects, and request **Standard** (~12 h) or **Bulk** (~48 h)
   restores. Deep Archive restores objects, not folders — the index is how you find the
   exact objects you need.
+- **Integrity audit** — reconcile the index against the actual bucket contents on
+  demand: flags objects the index thinks are archived but are missing from S3, size
+  mismatches, and storage-class drift, and imports anything new. Paginated, so it
+  scales past 1000 objects.
 - **Restore tracking** — restore requests are logged and polled via `head-object` until
   S3 reports the object is available, including its expiry date.
 - **Verified downloads** — restored objects are fetched back to a local folder with
@@ -341,6 +345,28 @@ production. All matched objects are added to the selection (scoped to the bucket
 chosen in the bucket filter, or all buckets), anything the index doesn't contain is
 listed as *not found*, and one click on **Request restore** sends the batch
 (Standard or Bulk). The parse result is logged like everything else.
+
+## Integrity audit
+
+Uploads are checksum-verified when they happen, but for cold storage it's worth
+periodically confirming the archive is still intact. **Audit bucket** (dashboard,
+next to Import) reconciles the index against the actual bucket contents:
+
+- Lists every object in the active bucket (**paginated**, so it works on buckets with
+  far more than 1000 objects) and compares it to what the index expects.
+- Flags any object the index believes is archived but that is **missing** from the
+  bucket (deleted, lifecycle-expired, or a write that never landed), any **size
+  mismatch**, and any object not in the expected storage class (**class drift**).
+- Imports objects found in the bucket but not yet in the index (same as
+  *Import bucket → index*).
+
+Results are summarised on the dashboard, each flagged object gets a badge in the
+**Index** tab (`missing` / `size_mismatch` / `class_drift`), and everything is written
+to the log under the `audit` category — a `missing` object is logged at ERROR level so
+it stands out. Re-running the audit refreshes all badges, so once you've fixed
+something (e.g. re-uploaded a missing file) the flag clears. The audit reads object
+metadata only (`list-objects-v2`); it does not restore or download anything, so it is
+cheap to run and safe on Deep Archive data.
 
 ## Performance tuning
 
