@@ -158,12 +158,29 @@ def api_browse():
 @app.post("/api/upload")
 def api_upload():
     data = request.get_json(force=True)
+    label = (data.get("label") or "").strip()
+    items = data.get("items")
+
+    if items:  # explicit selection of files/folders
+        clean = []
+        for it in items:
+            it = (it or "").strip()
+            if not it or not _allowed_path(it):
+                return jsonify({"error": f"item outside allowed roots: {it}"}), 400
+            if not os.path.exists(it):
+                return jsonify({"error": f"no longer exists: {it}"}), 400
+            clean.append(it)
+        if not clean:
+            return jsonify({"error": "no items selected"}), 400
+        sid = up.enqueue(None, label, "manual", items=clean)
+        return jsonify({"session_id": sid})
+
+    # whole folder
     path = (data.get("path") or "").strip()
     if not path or not _allowed_path(path):
         return jsonify({"error": f"path must be inside: {', '.join(config.BROWSE_ROOTS)}"}), 400
     if not os.path.isdir(path):
         return jsonify({"error": "not a directory"}), 400
-    label = (data.get("label") or "").strip() or os.path.basename(path.rstrip("/"))
     sid = up.enqueue(path, label, "manual")
     return jsonify({"session_id": sid})
 

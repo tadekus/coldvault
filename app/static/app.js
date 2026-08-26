@@ -163,35 +163,88 @@ async function loadBrowseRoots() {
   }
 }
 
+// Manual-upload selection: absolute path -> {type: "dir"|"file", name}
+const uploadSel = new Map();
+const joinPath = (dir, name) => dir.replace(/\/$/, "") + "/" + name;
+
+function updateUploadSel() {
+  $("#uploadSelCount").textContent = `${uploadSel.size} selected`;
+  $("#uploadSelHint").textContent = uploadSel.size
+    ? "Start upload sends only the selected items"
+    : "Nothing selected → Start upload sends the whole current folder";
+}
+
 async function browse(path) {
   try {
     const r = await api("/api/browse?path=" + encodeURIComponent(path || ""));
     $("#uploadPath").value = r.path;
-    let html = "";
-    if (r.parent) html += `<a data-p="${esc(r.parent)}">⬑ up</a>`;
-    html += r.dirs.map(d => `<a data-p="${esc(r.path.replace(/\/$/, "") + "/" + d)}">📁 ${esc(d)}</a>`).join("");
+    $("#uploadSelBar").style.display = "";
+    const rows = [];
+    if (r.parent)
+      rows.push(`<div class="browse-item"><span style="width:16px"></span><a class="navdir" data-p="${esc(r.parent)}">⬑ up</a></div>`);
+    r.dirs.forEach(d => {
+      const abs = joinPath(r.path, d);
+      rows.push(`<div class="browse-item">
+        <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="dir" data-name="${esc(d)}" ${uploadSel.has(abs) ? "checked" : ""}>
+        <a class="navdir" data-p="${esc(abs)}">📁 ${esc(d)}</a></div>`);
+    });
+    r.files.forEach(f => {
+      const abs = joinPath(r.path, f.name);
+      rows.push(`<div class="browse-item">
+        <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="file" data-name="${esc(f.name)}" ${uploadSel.has(abs) ? "checked" : ""}>
+        <span class="fname">📄 ${esc(f.name)} <span class="muted">${fmtBytes(f.size)}</span></span></div>`);
+    });
     const summary = `${r.dirs.length} folder(s), ${r.file_count} file(s) · ${fmtBytes(r.total_bytes)}`;
-    html += `<span class="muted" style="padding:3px 6px">${summary}</span>`;
-    if (r.files.length) {
-      html += `<div style="width:100%;margin-top:6px">` +
-        r.files.map(f => `<div class="mono" style="font-size:12px;padding:1px 0">📄 ${esc(f.name)} <span class="muted">${fmtBytes(f.size)}</span></div>`).join("") +
-        (r.files_truncated ? `<div class="muted" style="font-size:12px">…more files not listed</div>` : "") +
-        `</div>`;
-    }
-    $("#browseList").innerHTML = html;
-    $$("#browseList a").forEach(a => a.onclick = () => browse(a.dataset.p));
+    rows.push(`<div class="muted" style="padding:4px 2px">${summary}${r.files_truncated ? " · file list truncated" : ""}</div>`);
+    $("#browseList").innerHTML = rows.join("");
+
+    $$("#browseList a.navdir").forEach(a => a.onclick = () => browse(a.dataset.p));
+    $$("#browseList .upsel").forEach(cb => cb.onchange = () => {
+      cb.checked
+        ? uploadSel.set(cb.dataset.p, { type: cb.dataset.type, name: cb.dataset.name })
+        : uploadSel.delete(cb.dataset.p);
+      updateUploadSel();
+    });
+    updateUploadSel();
   } catch (e) {
     $("#browseList").innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
   }
 }
 $("#btnBrowse").onclick = () => browse($("#uploadPath").value);
 
+$("#btnSelAllHere").onclick = () => {
+  $$("#browseList .upsel").forEach(cb => {
+    cb.checked = true;
+    uploadSel.set(cb.dataset.p, { type: cb.dataset.type, name: cb.dataset.name });
+  });
+  updateUploadSel();
+};
+$("#btnClearSel").onclick = () => {
+  uploadSel.clear();
+  $$("#browseList .upsel").forEach(cb => cb.checked = false);
+  updateUploadSel();
+};
+
 $("#btnUpload").onclick = async () => {
-  const path = $("#uploadPath").value.trim();
-  if (!path) return alert("Enter a path first");
+  const label = $("#uploadLabel").value.trim();
+  let body;
+  if (uploadSel.size) {
+    const items = [...uploadSel.keys()];
+    const dirs = [...uploadSel.values()].filter(v => v.type === "dir").length;
+    if (!confirm(`Upload ${items.length} selected item(s) (${dirs} folder(s), ${items.length - dirs} file(s))?`)) return;
+    body = { items, label };
+  } else {
+    const path = $("#uploadPath").value.trim();
+    if (!path) return alert("Pick a location, or select files/folders to upload");
+    if (!confirm(`Upload the entire folder ${path}?`)) return;
+    body = { path, label };
+  }
   try {
-    const r = await api("/api/upload", { body: { path, label: $("#uploadLabel").value.trim() } });
+    const r = await api("/api/upload", { body });
     alert(`Upload session #${r.session_id} queued`);
+    uploadSel.clear();
+    updateUploadSel();
+    browse($("#uploadPath").value);
     loadDashboard();
   } catch (e) {
     alert("✘ " + e.message);
