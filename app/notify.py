@@ -13,9 +13,11 @@ import urllib.request
 
 import config
 import db
+import version
 from logs import log_event
 
 RESEND_URL = os.environ.get("RESEND_URL", "https://api.resend.com/emails")
+USER_AGENT = f"ColdVault/{version.VERSION}"
 
 
 def _fmt_bytes(n):
@@ -55,6 +57,10 @@ def send_email(subject, html):
     req = urllib.request.Request(RESEND_URL, data=payload, method="POST", headers={
         "Authorization": f"Bearer {config.RESEND_API_KEY}",
         "Content-Type": "application/json",
+        # Resend is behind Cloudflare, which blocks the default urllib
+        # User-Agent (seen as Cloudflare error 1010). Send a normal one.
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
     })
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

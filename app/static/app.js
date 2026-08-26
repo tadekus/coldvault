@@ -28,7 +28,8 @@ const chip = s => s ? `<span class="chip ${esc(s)}">${esc(s)}</span>` : "—";
 
 /* ---------- tabs ---------- */
 const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
-                  restores: loadRestores, downloads: loadDownloads, logs: loadLogs };
+                  restores: loadRestores, downloads: loadDownloads, notify: loadNotify,
+                  logs: loadLogs };
 let activeTab = "dashboard";
 
 $$(".tab").forEach(b => b.onclick = () => {
@@ -84,8 +85,6 @@ async function loadDashboard() {
       <div><b>Bucket</b><code>${esc(st.bucket) || "⚠ not set"}</code></div>
       <div><b>Region</b><code>${esc(st.region) || "—"}</code></div>
       <div><b>Prefix</b><code>${esc(st.prefix) || "(none)"}</code></div>`;
-
-    renderNotify(st);
   } catch (e) {
     $("#statCards").innerHTML = `<div class="card"><div class="lbl">error: ${esc(e.message)}</div></div>`;
   }
@@ -135,6 +134,14 @@ $("#btnAudit").onclick = async () => {
     $("#auditResult").textContent = "✘ " + e.message;
   }
 };
+
+async function loadNotify() {
+  try {
+    renderNotify(await api("/api/status"));
+  } catch (e) {
+    $("#notifyInfo").innerHTML = `<div class="muted">error: ${esc(e.message)}</div>`;
+  }
+}
 
 function renderNotify(st) {
   const ready = st.notify_ready;

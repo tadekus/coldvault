@@ -4,6 +4,12 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.1.1
+
+- Fix Resend calls failing with Cloudflare **403 error 1010**: send a real
+  `User-Agent` (and `Accept`) header instead of the blocked `Python-urllib` default.
+- Move **Email notifications** off the Dashboard into its own top-right tab.
+
 ## 1.1.0
 
 - **Email notifications via Resend.** After each canary/watcher upload, ColdVault runs

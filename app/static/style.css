@@ -32,6 +32,7 @@ nav { display: flex; gap: 4px; flex: 1; }
 }
 .tab:hover { color: var(--text); background: var(--panel2); }
 .tab.active { color: var(--accent); background: var(--accent-dim); }
+.tab.tab-right { margin-left: auto; }
 .bucket {
   font-family: ui-monospace, monospace; font-size: 12px;
   color: var(--muted); border: 1px solid var(--border);
