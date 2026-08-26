@@ -283,7 +283,8 @@ def find_duplicate(bucket, sha256, size, exclude_key):
                 (bucket, sha256, size, exclude_key))
 
 
-def search_files(bucket=None, q=None, status=None, session_id=None, limit=100, offset=0):
+def search_files(bucket=None, q=None, status=None, session_id=None, sort="new",
+                 limit=100, offset=0):
     where, params = "WHERE 1=1", []
     if bucket:
         where += " AND bucket = ?"
@@ -298,8 +299,11 @@ def search_files(bucket=None, q=None, status=None, session_id=None, limit=100, o
     if session_id:
         where += " AND session_id = ?"
         params.append(session_id)
+    # "new" = most recently indexed/uploaded first (id is insertion order, and is
+    # format-independent unlike the mixed uploaded_at timestamps); "key" = A–Z.
+    order = "id DESC" if sort == "new" else "bucket, key"
     total = _row(f"SELECT COUNT(*) c, COALESCE(SUM(size),0) b FROM files {where}", params)
-    items = _rows(f"SELECT * FROM files {where} ORDER BY bucket, key LIMIT ? OFFSET ?",
+    items = _rows(f"SELECT * FROM files {where} ORDER BY {order} LIMIT ? OFFSET ?",
                   params + [min(int(limit), 500), int(offset)])
     return total["c"], total["b"], items
 

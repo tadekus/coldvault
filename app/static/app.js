@@ -307,7 +307,7 @@ function fillBucketFilter(buckets, active) {
 async function loadFiles() {
   const q = new URLSearchParams({
     q: $("#search").value, status: $("#statusFilter").value,
-    bucket: $("#bucketFilter").value || "",
+    bucket: $("#bucketFilter").value || "", sort: $("#sortBy").value,
     limit: PAGE_SIZE, offset: page * PAGE_SIZE,
   });
   const r = await api("/api/files?" + q);
@@ -345,6 +345,7 @@ $("#btnSearch").onclick = () => { page = 0; loadFiles(); };
 $("#search").addEventListener("keydown", e => { if (e.key === "Enter") { page = 0; loadFiles(); } });
 $("#statusFilter").onchange = () => { page = 0; loadFiles(); };
 $("#bucketFilter").onchange = () => { page = 0; loadFiles(); };
+$("#sortBy").onchange = () => { page = 0; loadFiles(); };
 $("#prevPage").onclick = () => { page = Math.max(0, page - 1); loadFiles(); };
 $("#nextPage").onclick = () => { page++; loadFiles(); };
 $("#selAll").onchange = e => {
