@@ -14,8 +14,18 @@ services:
       # Restored files are downloaded here (READ-WRITE). Point the left side
       # anywhere you want the files to land, e.g. /tank/restores:/downloads
       - ./downloads:/downloads
-      # Debian automounts USB/external drives under /media/<user>/<label>
-      - /media:/media:ro
+      # Debian automounts USB/external drives under /media/<user>/<label>.
+      # propagation: rslave makes drives plugged in AFTER the container started
+      # appear inside the container — without it, the canary watcher never sees
+      # hot-plugged drives (Docker bind mounts default to rprivate). Requires the
+      # host root to be a shared mount (systemd default; else run once:
+      #   sudo mount --make-rshared /).
+      - type: bind
+        source: /media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rslave
       # Extra source locations for manual uploads (must also be listed in
       # COLDVAULT_BROWSE_ROOTS in .env). Keep the same path on both sides
       # so paths typed in the UI match:
