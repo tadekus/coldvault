@@ -216,11 +216,22 @@ block to the simple `- /Volumes:/media:ro`.)
 
 Any folder can be uploaded from the dashboard (path field or **Browse**), as long as
 it is (a) bind-mounted into the container and (b) listed in `COLDVAULT_BROWSE_ROOTS`.
-Example for a NAS/ZFS path on Linux — in `docker-compose.yml`:
+
+Because these mounts are specific to each machine, add them in a
+**`docker-compose.override.yml`** (git-ignored, auto-merged by `docker compose up`, so
+`git pull` never conflicts with your local mounts) rather than editing the committed
+`docker-compose.yml`. Copy the template and edit:
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
+```
 
 ```yaml
-volumes:
-  - /tank/nextcloud/data:/tank/nextcloud/data:ro
+# docker-compose.override.yml
+services:
+  coldvault:
+    volumes:
+      - /tank/nextcloud/data:/tank/nextcloud/data:ro
 ```
 
 and in `.env`:
@@ -229,9 +240,14 @@ and in `.env`:
 COLDVAULT_BROWSE_ROOTS=/tank/nextcloud/data
 ```
 
-(Keep the same path on both sides so paths typed in the UI match. On macOS, see the
-commented `testdata` mount in `docker-compose.mac.yml`.) The label field controls the
-S3 key prefix; empty defaults to the folder name.
+Then `docker compose up -d`. **Keep the same path on both sides** so paths typed in the
+UI match — a mismatch (e.g. `/data/x:/data/y`) shows the root as *(not mounted)* in the
+dashboard. The label field controls the S3 key prefix; empty defaults to the folder
+name. The override can also redirect where downloads land — see the template.
+
+(On macOS the override is not auto-loaded because the run uses `-f
+docker-compose.mac.yml`; add `-f docker-compose.override.yml` explicitly, or use the
+commented `testdata` mount in `docker-compose.mac.yml`.)
 
 The dashboard shows an **Accessible locations** list of every configured upload root
 (the watch dirs plus `COLDVAULT_BROWSE_ROOTS`), so you don't have to remember paths —

@@ -1,0 +1,32 @@
+# -----------------------------------------------------------------------------
+# Per-machine overrides — copy this file to docker-compose.override.yml and edit.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#
+# docker-compose.override.yml is git-ignored and is auto-merged on top of
+# docker-compose.yml by `docker compose up` (no -f needed), so `git pull` will
+# never conflict with the mounts you add here.
+#
+# For every source folder you want to browse/upload from, you need BOTH:
+#   1. a read-only bind mount here (keep the SAME path on both sides so the
+#      paths shown in the UI match — a mismatch shows as "not mounted" in the
+#      dashboard's Accessible locations), and
+#   2. that same path listed in COLDVAULT_BROWSE_ROOTS in your .env.
+#
+# NOTE: the macOS variant is run with `-f docker-compose.mac.yml`, and passing
+# -f disables auto-loading of this override. To use it there, add it explicitly:
+#   docker compose -f docker-compose.mac.yml -f docker-compose.override.yml up -d
+# -----------------------------------------------------------------------------
+services:
+  coldvault:
+    volumes:
+      # --- Source folders to upload from (read-only) ---
+      # Example: a restore/staging folder. Same path both sides.
+      - /home/tadek/restore:/home/tadek/restore:ro
+      # Example: a NAS/ZFS dataset.
+      # - /tank/nextcloud/data/tadek/files:/tank/nextcloud/data/tadek/files:ro
+
+      # --- Optional: change where downloads land ---
+      # This overrides the base ./downloads mount (same container target
+      # /downloads), so restored files go to a big volume instead:
+      # - /tank/restores:/downloads

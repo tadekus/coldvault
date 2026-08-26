@@ -26,9 +26,8 @@ services:
         read_only: true
         bind:
           propagation: rslave
-      # Extra source locations for manual uploads (must also be listed in
-      # COLDVAULT_BROWSE_ROOTS in .env). Keep the same path on both sides
-      # so paths typed in the UI match:
-      - /tank/nextcloud/data/tadek/files:/tank/nextcloud/data/tadek/files:ro
-      # - /mnt:/mnt:ro
+      # Machine-specific source folders for manual uploads go in
+      # docker-compose.override.yml (copy docker-compose.override.example.yml).
+      # That file is git-ignored and auto-merged by `docker compose up`, so a
+      # `git pull` never conflicts with your local mounts.
     restart: unless-stopped
