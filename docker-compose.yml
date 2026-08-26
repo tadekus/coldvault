@@ -6,11 +6,17 @@ services:
     environment:
       # Fixed internal port; change the host port via COLDVAULT_PORT in .env
       COLDVAULT_PORT: 9999
+      # Timezone for log/index timestamps. Defaults to the host tz via the
+      # /etc/localtime mount below; set TZ in .env to override (e.g. Europe/Prague).
+      TZ: ${TZ:-}
     ports:
       - "${COLDVAULT_PORT:-9999}:9999"
     volumes:
       # Persistent index database + logs
       - ./data:/data
+      # Use the host's local time for timestamps (read-only)
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       # Restored files are downloaded here (READ-WRITE). Point the left side
       # anywhere you want the files to land, e.g. /tank/restores:/downloads
       - ./downloads:/downloads
