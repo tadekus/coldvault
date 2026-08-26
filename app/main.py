@@ -105,6 +105,27 @@ def api_set_bucket():
     return jsonify({"ok": True, "bucket": name})
 
 
+@app.get("/api/browse/roots")
+def api_browse_roots():
+    """The configured upload roots (watch dirs + COLDVAULT_BROWSE_ROOTS), each
+    checked for whether it actually exists and is readable inside the container.
+    Deduplicated, order preserved."""
+    seen, roots = set(), []
+    for r in config.BROWSE_ROOTS:
+        real = os.path.realpath(r)
+        if real in seen:
+            continue
+        seen.add(real)
+        exists = os.path.isdir(r)
+        roots.append({
+            "path": r,
+            "exists": exists,
+            "readable": exists and os.access(r, os.R_OK | os.X_OK),
+            "is_watch": r in config.WATCH_DIRS,
+        })
+    return jsonify({"roots": roots})
+
+
 @app.get("/api/browse")
 def api_browse():
     path = request.args.get("path") or (config.BROWSE_ROOTS[0] if config.BROWSE_ROOTS else "/media")
@@ -112,18 +133,26 @@ def api_browse():
         return jsonify({"error": f"path outside allowed roots ({', '.join(config.BROWSE_ROOTS)})"}), 403
     if not os.path.isdir(path):
         return jsonify({"error": "not a directory"}), 400
-    dirs, nfiles = [], 0
+    dirs, files, total_bytes, nfiles = [], [], 0, 0
     try:
         for e in sorted(os.scandir(path), key=lambda x: x.name.lower()):
             if e.is_dir(follow_symlinks=False):
                 dirs.append(e.name)
             elif e.is_file(follow_symlinks=False):
                 nfiles += 1
+                try:
+                    sz = e.stat(follow_symlinks=False).st_size
+                except OSError:
+                    sz = 0
+                total_bytes += sz
+                if len(files) < 500:
+                    files.append({"name": e.name, "size": sz})
     except OSError as e:
         return jsonify({"error": str(e)}), 400
     parent = os.path.dirname(path.rstrip("/"))
     return jsonify({"path": path, "parent": parent if _allowed_path(parent) else None,
-                    "dirs": dirs, "file_count": nfiles})
+                    "dirs": dirs, "files": files, "file_count": nfiles,
+                    "files_truncated": nfiles > len(files), "total_bytes": total_bytes})
 
 
 @app.post("/api/upload")

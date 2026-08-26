@@ -142,6 +142,27 @@ $("#btnUseBucket").onclick = async () => {
 };
 
 /* ---------- browse + manual upload ---------- */
+async function loadBrowseRoots() {
+  try {
+    const r = await api("/api/browse/roots");
+    if (!r.roots.length) {
+      $("#browseRoots").innerHTML = `<span class="muted">no roots configured — add mounts and COLDVAULT_BROWSE_ROOTS</span>`;
+      return;
+    }
+    $("#browseRoots").innerHTML = r.roots.map(root => {
+      if (!root.exists)
+        return `<span class="muted" title="mounted in compose but not present in container">${esc(root.path)} (not mounted)</span>`;
+      if (!root.readable)
+        return `<span class="muted" title="present but not readable — check permissions">${esc(root.path)} (not readable)</span>`;
+      const tag = root.is_watch ? " 👁" : "";
+      return `<a data-p="${esc(root.path)}" title="${root.is_watch ? "watch dir (canary)" : "browse root"}">🗄 ${esc(root.path)}${tag}</a>`;
+    }).join("");
+    $$("#browseRoots a").forEach(a => a.onclick = () => browse(a.dataset.p));
+  } catch (e) {
+    $("#browseRoots").innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
+  }
+}
+
 async function browse(path) {
   try {
     const r = await api("/api/browse?path=" + encodeURIComponent(path || ""));
@@ -149,7 +170,14 @@ async function browse(path) {
     let html = "";
     if (r.parent) html += `<a data-p="${esc(r.parent)}">⬑ up</a>`;
     html += r.dirs.map(d => `<a data-p="${esc(r.path.replace(/\/$/, "") + "/" + d)}">📁 ${esc(d)}</a>`).join("");
-    html += `<span class="muted" style="padding:3px 6px">${r.file_count} files here</span>`;
+    const summary = `${r.dirs.length} folder(s), ${r.file_count} file(s) · ${fmtBytes(r.total_bytes)}`;
+    html += `<span class="muted" style="padding:3px 6px">${summary}</span>`;
+    if (r.files.length) {
+      html += `<div style="width:100%;margin-top:6px">` +
+        r.files.map(f => `<div class="mono" style="font-size:12px;padding:1px 0">📄 ${esc(f.name)} <span class="muted">${fmtBytes(f.size)}</span></div>`).join("") +
+        (r.files_truncated ? `<div class="muted" style="font-size:12px">…more files not listed</div>` : "") +
+        `</div>`;
+    }
     $("#browseList").innerHTML = html;
     $$("#browseList a").forEach(a => a.onclick = () => browse(a.dataset.p));
   } catch (e) {
@@ -485,3 +513,4 @@ $("#btnLogs").onclick = loadLogs;
 
 /* ---------- init ---------- */
 loadDashboard();
+loadBrowseRoots();
