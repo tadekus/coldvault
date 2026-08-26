@@ -422,7 +422,7 @@ async function loadSessions() {
       <td>${esc(s.trigger)}</td>
       <td>${chip(s.status)}</td>
       <td><div class="progress"><i style="width:${pct}%"></i></div>
-          <span class="mono">${s.done_files}/${s.total_files} files · ${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)} (${pct}%)</span></td>
+          <span class="mono">${s.done_files} up${s.skipped_files ? ` · ${s.skipped_files} skip` : ""}${s.failed_files ? ` · ${s.failed_files} fail` : ""} / ${s.total_files} files · ${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)} (${pct}%)</span></td>
       <td class="num">${s.done_files}</td>
       <td class="num">${s.skipped_files}</td>
       <td class="num" ${s.failed_files ? 'style="color:var(--err)"' : ""}>${s.failed_files}</td>

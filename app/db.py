@@ -258,6 +258,20 @@ def list_sessions(limit=50):
     return _rows("SELECT * FROM sessions ORDER BY id DESC LIMIT ?", (limit,))
 
 
+def latest_session_status(source, bucket):
+    r = _row("SELECT status FROM sessions WHERE source=? AND bucket=? "
+             "ORDER BY id DESC LIMIT 1", (source, bucket))
+    return r["status"] if r else None
+
+
+def fail_stale_sessions():
+    """Mark sessions left mid-flight by a crash/restart as failed, so the UI
+    doesn't show a 'running' session that no process is actually running."""
+    cur = _exec("UPDATE sessions SET status='failed', finished_at=? "
+                "WHERE status IN ('queued','scanning','running')", (now(),))
+    return cur.rowcount
+
+
 # ---- files ----
 
 def get_file(bucket, key):

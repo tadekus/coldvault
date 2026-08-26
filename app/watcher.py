@@ -63,11 +63,32 @@ class Watcher(threading.Thread):
                     found[mount] = canary
         return found
 
+    def _seed_active(self):
+        """On startup, treat drives that are ALREADY mounted and whose most
+        recent session for this bucket completed cleanly ('done') as already
+        handled, so a container restart doesn't re-upload a drive left plugged
+        in. A drive with no session, or whose last session failed / was
+        interrupted, is left unseeded so it uploads (or resumes) normally.
+        (Our udev mount is read-only, so a still-mounted drive can't have gained
+        new files since it was uploaded.)"""
+        try:
+            for mount, canary in self._scan_mounts().items():
+                if db.latest_session_status(mount, config.BUCKET) == "done":
+                    label = _read_canary(canary, mount)
+                    self.active[mount] = {"label": label, "session_id": None,
+                                          "detected_at": db.now(), "seeded": True}
+                    log_event("INFO", "watcher",
+                              f"drive already uploaded (last session done), still mounted "
+                              f"at {mount} — not re-uploading; replug to re-scan")
+        except Exception as e:
+            log_event("ERROR", "watcher", f"seed error: {e}")
+
     def run(self):
         log_event("INFO", "watcher",
                   f"watching {', '.join(config.WATCH_DIRS)} for '{config.CANARY_NAME}' "
                   f"(auto_upload={'on' if config.AUTO_UPLOAD else 'off'}, "
                   f"every {config.WATCH_INTERVAL}s)")
+        self._seed_active()
         while True:
             try:
                 found = self._scan_mounts()
