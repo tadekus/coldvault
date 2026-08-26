@@ -177,6 +177,13 @@ Notes:
    files); every file lands in the **Index** with its checksum. Re-plugging the drive
    later uploads only new or changed files.
 
+A canary drive triggers **one** upload per plug-in. Restarting the app while the drive
+stays mounted does **not** re-upload it (the last session already completed cleanly, and
+our udev mount is read-only so nothing can have changed) — unplug and replug to force a
+re-scan. If a restart interrupts an upload, that session is marked `failed` and the
+still-mounted drive is re-scanned on next start to resume it (already-verified files are
+skipped).
+
 OS junk (`.DS_Store`, `System Volume Information`, `.Trash-*`, resource forks etc.) is
 excluded — configurable via `COLDVAULT_EXCLUDE`.
 

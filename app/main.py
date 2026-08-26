@@ -29,6 +29,10 @@ if _stale:
     log_event("WARNING", "app",
               f"marked {_stale} upload(s) interrupted by restart as failed — "
               f"re-run their session to retry")
+_stale_sess = db.fail_stale_sessions()
+if _stale_sess:
+    log_event("WARNING", "app",
+              f"marked {_stale_sess} upload session(s) left running by a restart as failed")
 _stale_dl = db.fail_stale_downloads()
 if _stale_dl:
     log_event("WARNING", "app",
