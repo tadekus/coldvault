@@ -194,6 +194,14 @@ COLDVAULT_BROWSE_ROOTS=/tank/nextcloud/data
 commented `testdata` mount in `docker-compose.mac.yml`.) The label field controls the
 S3 key prefix; empty defaults to the folder name.
 
+The dashboard shows an **Accessible locations** list of every configured upload root
+(the watch dirs plus `COLDVAULT_BROWSE_ROOTS`), so you don't have to remember paths —
+click one to start browsing. Each root is checked live inside the container: readable
+roots are clickable, while ones that are configured but missing show as *(not mounted)*
+and ones present but without permission show as *(not readable)* — a quick way to
+confirm a new volume mount actually landed. Drilling into a folder lists its subfolders
+and its files (with sizes), and **Start upload** archives the selected folder.
+
 ## Restoring
 
 Deep Archive objects must be restored before they can be downloaded:
