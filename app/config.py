@@ -1,4 +1,5 @@
 import os
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,6 +21,13 @@ def _load_dotenv():
 
 
 _load_dotenv()
+
+# Apply TZ (from the container env or .env) so timestamps use local time.
+if os.environ.get("TZ"):
+    try:
+        time.tzset()
+    except AttributeError:
+        pass  # not available on non-Unix
 
 
 def env(name, default=""):

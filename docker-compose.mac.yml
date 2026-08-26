@@ -12,6 +12,9 @@ services:
     environment:
       COLDVAULT_PORT: 9999
       COLDVAULT_WATCH_DIRS: /media
+      # Set TZ in .env (e.g. Europe/Prague); Docker Desktop's Linux VM has no
+      # host /etc/localtime to inherit, so TZ is the reliable way on macOS.
+      TZ: ${TZ:-}
     ports:
       - "${COLDVAULT_PORT:-9999}:9999"
     volumes:

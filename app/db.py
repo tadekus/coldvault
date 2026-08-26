@@ -1,6 +1,6 @@
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 
 import config
 
@@ -112,7 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
 
 def now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    # Local system time. The container inherits the host timezone via the
+    # /etc/localtime mount (and/or TZ) in docker-compose; see .env.example.
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _migrate():

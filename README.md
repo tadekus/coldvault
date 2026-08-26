@@ -421,3 +421,7 @@ or just divide it.
   (`data/coldvault.db`) is your file inventory — worth backing up occasionally.
 - The web UI has no authentication — bind it to localhost or your LAN only
   (e.g. `127.0.0.1:9999:9999` in docker-compose) and don't expose it to the internet.
+- Timestamps are shown in **local time**. On Debian the container inherits the host
+  timezone via the `/etc/localtime` mount; set `TZ` in `.env` (e.g. `Europe/Prague`)
+  to force one, which is also how to set it on macOS. Rows written before this change
+  keep their old UTC values.
