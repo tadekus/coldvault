@@ -411,8 +411,41 @@ def api_download():
     if not os.access(dest, os.W_OK):
         return jsonify({"error": f"destination not writable: {dest} — check the "
                                  f"volume mount is read-write"}), 400
-    sid = down.enqueue(dest, items)
-    return jsonify({"session_id": sid})
+
+    policy = data.get("on_insufficient")   # None | "fit" | "cancel"
+    if policy == "cancel":
+        return jsonify({"cancelled": True})
+
+    # Disk-space pre-flight against the destination filesystem.
+    st = os.statvfs(dest)
+    free = st.f_bavail * st.f_frsize
+    budget = free - config.DOWNLOAD_MIN_FREE
+    required = sum(int(i.get("size") or 0) for i in items)
+
+    if required <= budget:
+        sid = down.enqueue(dest, items)
+        return jsonify({"session_id": sid})
+
+    # Won't all fit — work out what does (order-preserving).
+    fit, skipped, used = downloader_mod.plan_within_budget(items, budget)
+
+    if policy == "fit":
+        if not fit:
+            return jsonify({"error": "not enough free space for even one selected file",
+                            "free": free, "required": required}), 507
+        sid = down.enqueue(dest, fit)
+        log_event("WARNING", "download",
+                  f"insufficient space at {dest} (free {free:,}, need {required:,}): "
+                  f"downloading {len(fit)} file(s) that fit, skipped {len(skipped)}")
+        return jsonify({"session_id": sid, "partial": True,
+                        "downloaded_count": len(fit), "skipped_count": len(skipped),
+                        "skipped": [i.get("key") for i in skipped][:200]})
+
+    # No policy chosen yet — let the UI ask the user (A: fit / B: cancel).
+    return jsonify({"needs_confirmation": True, "dest": dest, "free": free,
+                    "required": required, "reserve": config.DOWNLOAD_MIN_FREE,
+                    "fits_count": len(fit), "fits_bytes": used,
+                    "total_count": len(items), "skipped_count": len(skipped)})
 
 
 @app.get("/api/download/sessions")

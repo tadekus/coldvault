@@ -64,6 +64,9 @@ DOWNLOAD_WORKERS = max(1, env_int("COLDVAULT_DOWNLOAD_WORKERS", 2))
 DOWNLOAD_PART_WORKERS = max(1, env_int("COLDVAULT_DOWNLOAD_PART_WORKERS", 4))
 # Objects larger than this are fetched with parallel ranged GETs
 DOWNLOAD_PART_SIZE = max(5, env_int("COLDVAULT_DOWNLOAD_PART_SIZE_MB", 256)) * 1024 * 1024
+# Keep at least this much free on the destination filesystem (headroom so a
+# download never fills the disk to zero).
+DOWNLOAD_MIN_FREE = env_int("COLDVAULT_DOWNLOAD_MIN_FREE_MB", 200) * 1024 * 1024
 PORT = env_int("COLDVAULT_PORT", 9999)
 
 DATA_DIR = env("COLDVAULT_DATA_DIR", "/data")

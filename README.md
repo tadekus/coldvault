@@ -329,6 +329,12 @@ objects and restores still in progress fail with an explicit message rather than
 leaving a corrupt file. Files already present locally with a matching size and
 checksum are skipped, so an interrupted job resumes cheaply.
 
+Before starting, ColdVault checks the selection fits the destination filesystem
+(keeping `COLDVAULT_DOWNLOAD_MIN_FREE_MB` free, default 200). If it doesn't, it asks
+whether to **download only the files that fit** (it keeps each file whose size still
+fits the remaining space and skips the ones that don't) or **cancel the whole
+download** — nothing is written until you choose.
+
 Large objects are fetched with **parallel ranged GETs**
 (`COLDVAULT_DOWNLOAD_PART_WORKERS`, default 4) written directly into the target file,
 mirroring the parallel multipart upload path. Progress, per-part speed and per-file
