@@ -53,6 +53,22 @@
   </div>
 
   <div class="box">
+    <h3>Email notifications</h3>
+    <div id="notifyInfo" class="kv"></div>
+    <div class="row">
+      <button id="btnEmailReport">Email audit report now</button>
+      <button id="btnEmailTest" class="secondary">Send test email</button>
+    </div>
+    <div id="notifyResult" class="muted"></div>
+    <div class="muted" style="margin-top:6px">
+      Configure <code>RESEND_API_KEY</code>, <code>COLDVAULT_EMAIL_FROM</code> and
+      <code>COLDVAULT_EMAIL_TO</code> in <code>.env</code>. With
+      <code>COLDVAULT_NOTIFY=true</code>, every canary upload is followed by an audit
+      and a report email automatically.
+    </div>
+  </div>
+
+  <div class="box">
     <h3>Manual upload</h3>
     <h4>Accessible locations</h4>
     <div id="browseRoots" class="browse muted">loading…</div>

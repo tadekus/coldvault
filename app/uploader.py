@@ -62,6 +62,8 @@ class Uploader:
         self.q = queue.Queue()
         self.current_session = None
         self._selections = {}   # sid -> explicit list of selected paths
+        # Optional callback(sid, trigger) run after a session finishes; set by main.
+        self.on_session_done = None
         threading.Thread(target=self._loop, daemon=True, name="uploader").start()
 
     @staticmethod
@@ -105,13 +107,21 @@ class Uploader:
         while True:
             sid = self.q.get()
             self.current_session = sid
+            trigger = None
             try:
+                s = db.get_session(sid)
+                trigger = s["trigger"] if s else None
                 self._run_session(sid)
             except Exception as e:
                 log_event("ERROR", "upload", f"Session #{sid} crashed: {e}")
                 db.update_session(sid, status="failed", finished_at=db.now())
             finally:
                 self.current_session = None
+            if self.on_session_done:
+                try:
+                    self.on_session_done(sid, trigger)
+                except Exception as e:
+                    log_event("ERROR", "upload", f"on_session_done hook failed for #{sid}: {e}")
 
     # ---- session ----
 

@@ -84,6 +84,8 @@ async function loadDashboard() {
       <div><b>Bucket</b><code>${esc(st.bucket) || "⚠ not set"}</code></div>
       <div><b>Region</b><code>${esc(st.region) || "—"}</code></div>
       <div><b>Prefix</b><code>${esc(st.prefix) || "(none)"}</code></div>`;
+
+    renderNotify(st);
   } catch (e) {
     $("#statCards").innerHTML = `<div class="card"><div class="lbl">error: ${esc(e.message)}</div></div>`;
   }
@@ -131,6 +133,37 @@ $("#btnAudit").onclick = async () => {
     if (activeTab === "files") loadFiles();
   } catch (e) {
     $("#auditResult").textContent = "✘ " + e.message;
+  }
+};
+
+function renderNotify(st) {
+  const ready = st.notify_ready;
+  $("#notifyInfo").innerHTML = `
+    <div><b>Auto after canary</b>${st.notify_enabled ? "enabled" : "disabled (set COLDVAULT_NOTIFY=true)"}</div>
+    <div><b>Recipients</b><code>${st.email_to && st.email_to.length ? esc(st.email_to.join(", ")) : "(none set)"}</code></div>
+    <div><b>Resend config</b>${ready ? "✔ ready" : "⚠ incomplete — see below"}</div>`;
+  const dis = !ready;
+  $("#btnEmailReport").disabled = dis;
+  $("#btnEmailTest").disabled = dis;
+}
+
+$("#btnEmailTest").onclick = async () => {
+  $("#notifyResult").textContent = "sending test email…";
+  try {
+    const r = await api("/api/notify/test", { method: "POST" });
+    $("#notifyResult").textContent = "✔ test email sent" + (r.id ? ` (id ${r.id})` : "");
+  } catch (e) {
+    $("#notifyResult").textContent = "✘ " + e.message;
+  }
+};
+
+$("#btnEmailReport").onclick = async () => {
+  $("#notifyResult").textContent = "running audit and emailing report…";
+  try {
+    const r = await api("/api/notify/report", { method: "POST" });
+    $("#notifyResult").textContent = "✔ audit report emailed" + (r.id ? ` (id ${r.id})` : "");
+  } catch (e) {
+    $("#notifyResult").textContent = "✘ " + e.message;
   }
 };
 
