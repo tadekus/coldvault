@@ -1,0 +1,14 @@
+[Unit]
+Description=ColdVault USB auto-mount for %i
+# Don't start until the device node exists; stop tracking if it goes away.
+Requires=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+# %I is the instance name = the kernel device (e.g. sdb1), passed to the helper.
+Environment=TRIGGER_DEVICE=%I
+ExecStart=/usr/local/sbin/coldvault-usb-mount %I
+# Mounting is quick; a dirty volume is caught by the helper's own 20s timeout.
+TimeoutStartSec=120
+User=root

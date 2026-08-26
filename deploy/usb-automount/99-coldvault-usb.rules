@@ -1,0 +1,35 @@
+# /etc/udev/rules.d/99-coldvault-usb.rules
+# ------------------------------------------------------------------------------
+# On plug-in of a USB partition that carries a filesystem, hand off to a systemd
+# service that mounts it read-only under /media/<label>. udev itself must NOT run
+# long-running / mount tasks, so it only starts the service. On removal, a short
+# RUN command lazy-unmounts the now-stale /media mount.
+#
+# This coexists with the usb-to-nextcloud rules: both use += on SYSTEMD_WANTS, so
+# an exFAT stick carrying both canaries triggers both integrations. They mount at
+# different paths (/mnt/usb-sync vs /media), both read-only, so they don't clash.
+#
+# Match notes:
+#   ACTION=="add"                    only on plug-in
+#   ENV{ID_BUS}=="usb"               USB devices only (not internal disks)
+#   ENV{DEVTYPE}=="partition"        the partition node (sdb1), not the disk (sdb)
+#   ENV{ID_FS_USAGE}=="filesystem"   has a mountable filesystem (any type)
+#   %k                               kernel device name -> service instance
+# ------------------------------------------------------------------------------
+
+# --- Option A: any USB filesystem (the canary is your safety net; ColdVault only
+#     uploads drives that contain coldvault.canary). -----------------------------
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", ENV{ID_FS_USAGE}=="filesystem", TAG+="systemd", ENV{SYSTEMD_WANTS}+="coldvault-usb-mount@%k.service"
+
+# --- Option B (optional): pin to ONE physical disk. ---------------------------
+# Find your value:  udevadm info -q property -n /dev/sdX1 | grep -E 'ID_FS_(UUID|LABEL)='
+# Then comment out Option A above, uncomment ONE of these and fill it in:
+#
+# By volume label:
+# ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", ENV{ID_FS_LABEL}=="QuickStickX", TAG+="systemd", ENV{SYSTEMD_WANTS}+="coldvault-usb-mount@%k.service"
+#
+# By filesystem UUID (most specific):
+# ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", ENV{ID_FS_UUID}=="AAC4-379D", TAG+="systemd", ENV{SYSTEMD_WANTS}+="coldvault-usb-mount@%k.service"
+
+# --- Cleanup on removal: lazy-unmount the stale /media mount. ------------------
+ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", RUN+="/usr/local/sbin/coldvault-usb-clean"

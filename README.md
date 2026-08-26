@@ -223,6 +223,18 @@ visibility is best-effort — plug the drive in before `up`, or restart the cont
 after plugging in. (If Docker Desktop rejects the propagation setting, revert that
 block to the simple `- /Volumes:/media:ro`.)
 
+On a **headless Debian server** (no desktop), USB drives don't auto-mount at all.
+An installable udev + systemd package that auto-mounts canary drives read-only under
+`/media` on plug-in — so the workflow is truly hands-off — lives in
+[`deploy/usb-automount/`](deploy/usb-automount/):
+
+```bash
+cd deploy/usb-automount && sudo ./install-udev.sh
+```
+
+It checks the propagation prerequisites above during install, and coexists with a
+separate usb-to-nextcloud sync if you run one (they mount at different paths).
+
 ## Manual uploads
 
 Any folder can be uploaded from the dashboard (path field or **Browse**), as long as
