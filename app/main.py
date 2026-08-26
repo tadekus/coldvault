@@ -10,6 +10,7 @@ import downloader as downloader_mod
 import editlist
 import restore
 import uploader as uploader_mod
+import version
 import watcher as watcher_mod
 from awsapi import AwsError
 from logs import log_event
@@ -47,12 +48,13 @@ def _allowed_path(path):
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", version=version.VERSION)
 
 
 @app.get("/api/status")
 def api_status():
     return jsonify({
+        "version": version.VERSION,
         "bucket": config.BUCKET,
         "region": os.environ.get("AWS_DEFAULT_REGION", ""),
         "prefix": config.PREFIX,

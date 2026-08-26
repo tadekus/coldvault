@@ -85,7 +85,8 @@ LOG_PATH = os.path.join(DATA_DIR, "coldvault.log")
 EXCLUDES = _csv(
     "COLDVAULT_EXCLUDE",
     ".Trashes,.Trash-*,.Spotlight-V100,System Volume Information,"
-    ".fseventsd,.TemporaryItems,.DS_Store,._*,lost+found,$RECYCLE.BIN,.hidden",
+    ".fseventsd,.TemporaryItems,.DS_Store,._*,lost+found,$RECYCLE.BIN,.hidden,"
+    ".nextcloud-sync-canary,.nextcloudignore",
 )
 
 os.makedirs(TMP_DIR, exist_ok=True)
