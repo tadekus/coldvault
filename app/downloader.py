@@ -25,6 +25,20 @@ def fmt_speed(bps):
         bps /= 1024
 
 
+def plan_within_budget(items, budget):
+    """Order-preserving greedy pack: keep each item whose size still fits the
+    remaining budget, skip the ones that don't. Returns (fit, skipped, used)."""
+    fit, skipped, used = [], [], 0
+    for it in items:
+        s = int(it.get("size") or 0)
+        if used + s <= budget:
+            fit.append(it)
+            used += s
+        else:
+            skipped.append(it)
+    return fit, skipped, used
+
+
 def safe_dest(dest_root, key):
     """Map an S3 key to a local path under dest_root, refusing anything that
     would escape it (defensive against keys containing '..')."""

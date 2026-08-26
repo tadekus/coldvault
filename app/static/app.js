@@ -561,13 +561,37 @@ $("#btnDownload").onclick = async () => {
   const base = $("#destPath").value.trim();
   const sub = $("#destSub").value.trim().replace(/^\/+|\/+$/g, "");
   const dest = sub ? base.replace(/\/$/, "") + "/" + sub : base;
-  if (!confirm(`Download ${dlSelected.size} object(s) to ${dest}?`)) return;
+  const items = [...dlSelected.values()];
+  const totalBytes = items.reduce((a, x) => a + (x.size || 0), 0);
+  if (!confirm(`Download ${items.length} object(s) (${fmtBytes(totalBytes)}) to ${dest}?`)) return;
   try {
-    const r = await api("/api/download", { body: { dest, items: [...dlSelected.values()] } });
-    alert(`Download session #${r.session_id} queued`);
-    dlSelected.clear();
-    updateDlCount();
-    loadDownloads();
+    let r = await api("/api/download", { body: { dest, items } });
+
+    if (r.needs_confirmation) {
+      if (r.fits_count === 0) {
+        alert(`Not enough space at ${dest}.\n` +
+              `Free: ${fmtBytes(r.free)} · needed: ${fmtBytes(r.required)}.\n` +
+              `Not even the smallest selected file fits — download cancelled.`);
+        return;
+      }
+      const ok = confirm(
+        `Not enough space at ${dest}.\n\n` +
+        `Needed: ${fmtBytes(r.required)}      Free: ${fmtBytes(r.free)}\n` +
+        `Only ${r.fits_count} of ${r.total_count} file(s) (${fmtBytes(r.fits_bytes)}) will fit.\n\n` +
+        `OK  = download the ${r.fits_count} file(s) that fit\n` +
+        `Cancel = cancel the whole download`);
+      if (!ok) return;
+      r = await api("/api/download", { body: { dest, items, on_insufficient: "fit" } });
+    }
+
+    if (r.session_id) {
+      let msg = `Download session #${r.session_id} queued`;
+      if (r.partial) msg += `\n${r.downloaded_count} file(s) that fit; ${r.skipped_count} skipped for space.`;
+      alert(msg);
+      dlSelected.clear();
+      updateDlCount();
+      loadDownloads();
+    }
   } catch (e) {
     alert("✘ " + e.message);
   }
