@@ -112,6 +112,8 @@ td.num { white-space: nowrap; text-align: right; }
 .chip.uploading, .chip.running, .chip.scanning, .chip.in_progress, .chip.queued { background: #33301a; color: var(--warn); }
 .chip.failed, .chip.ERROR, .chip.done_with_errors { background: #3a1f1c; color: var(--err); }
 .chip.remote { background: var(--accent-dim); color: var(--accent); }
+.chip.missing { background: #3a1f1c; color: var(--err); }
+.chip.size_mismatch, .chip.class_drift { background: #33301a; color: var(--warn); }
 .chip.INFO { background: var(--accent-dim); color: var(--accent); }
 .chip.WARNING { background: #33301a; color: var(--warn); }
 .chip.DEBUG { background: var(--panel2); color: var(--muted); }

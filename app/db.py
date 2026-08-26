@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS files(
   uploaded_at TEXT,
   verified_at TEXT,
   upload_seconds REAL,
+  audit_state TEXT,        -- ok | missing | size_mismatch | class_drift (last audit)
+  audited_at TEXT,
   UNIQUE(bucket, key)
 );
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
@@ -122,10 +124,13 @@ def _migrate():
         return
     cols = [r[1] for r in _conn.execute("PRAGMA table_info(files)").fetchall()]
     if "bucket" in cols:
-        if "upload_seconds" not in cols:
-            print("[db] adding upload_seconds column to files")
-            _conn.execute("ALTER TABLE files ADD COLUMN upload_seconds REAL")
-            _conn.commit()
+        for col, decl in (("upload_seconds", "REAL"),
+                          ("audit_state", "TEXT"),
+                          ("audited_at", "TEXT")):
+            if col not in cols:
+                print(f"[db] adding {col} column to files")
+                _conn.execute(f"ALTER TABLE files ADD COLUMN {col} {decl}")
+        _conn.commit()
         return
     default = None
     if "settings" in tables:
@@ -309,6 +314,21 @@ def match_files_by_name(bucket, name):
         where += " AND bucket = ?"
         params.append(bucket)
     return _rows(f"SELECT bucket, key, size, status FROM files {where} LIMIT 20", params)
+
+
+def files_for_audit(bucket):
+    """All index rows for a bucket that represent objects expected in S3."""
+    return _rows("SELECT id, key, size, storage_class, status FROM files "
+                 "WHERE bucket=? AND status IN ('verified','remote')", (bucket,))
+
+
+def set_audit(file_id, state, when):
+    _exec("UPDATE files SET audit_state=?, audited_at=? WHERE id=?",
+          (state, when, file_id))
+
+
+def clear_audit(bucket):
+    _exec("UPDATE files SET audit_state=NULL WHERE bucket=?", (bucket,))
 
 
 def distinct_buckets():

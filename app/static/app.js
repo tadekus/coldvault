@@ -110,6 +110,30 @@ $("#btnSync").onclick = async () => {
   }
 };
 
+$("#btnAudit").onclick = async () => {
+  if (!confirm("Reconcile the index against the actual bucket contents?\n" +
+    "Lists every object (paginated) and flags anything missing or mismatched.")) return;
+  $("#auditResult").innerHTML = "auditing bucket (may take a while on big buckets)…";
+  try {
+    const r = await api("/api/audit", { method: "POST" });
+    const problems = r.missing_count + r.size_mismatch_count + r.class_drift_count;
+    let msg = problems
+      ? `<span style="color:var(--err)">⚠ ${problems} issue(s)</span> — `
+      : `<span style="color:var(--ok)">✔ all good</span> — `;
+    msg += `${r.ok} verified in bucket, ${r.in_bucket} objects total`;
+    if (r.imported) msg += `, ${r.imported} newly imported`;
+    if (r.missing_count) msg += `<br><span style="color:var(--err)">${r.missing_count} MISSING from bucket</span>` +
+      (r.missing.length ? `: <span class="mono" style="font-size:11px">${r.missing.slice(0,10).map(esc).join(", ")}${r.missing_count>10?" …":""}</span>` : "");
+    if (r.size_mismatch_count) msg += `<br><span style="color:var(--warn)">${r.size_mismatch_count} size mismatch</span>`;
+    if (r.class_drift_count) msg += `<br><span style="color:var(--warn)">${r.class_drift_count} in unexpected storage class</span>`;
+    msg += `<br><span class="muted">Flagged files are badged in the Index tab. See the Logs (category: audit).</span>`;
+    $("#auditResult").innerHTML = msg;
+    if (activeTab === "files") loadFiles();
+  } catch (e) {
+    $("#auditResult").textContent = "✘ " + e.message;
+  }
+};
+
 $("#btnListBuckets").onclick = async () => {
   $("#testResult").textContent = "listing buckets…";
   try {
@@ -303,7 +327,7 @@ async function loadFiles() {
       <td class="mono">${esc(f.bucket)}</td>
       <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
       <td class="num">${fmtBytes(f.size)}</td>
-      <td>${chip(f.status)}</td>
+      <td>${chip(f.status)}${f.audit_state && f.audit_state !== "ok" ? " " + chip(f.audit_state) : ""}</td>
       <td>${rst}</td>
       <td class="mono">${esc(f.uploaded_at || "—")}</td>
       <td class="num" title="${f.upload_seconds ? `uploaded in ${f.upload_seconds}s` : ""}">${f.upload_seconds ? fmtBytes(f.size / f.upload_seconds) + "/s" : "—"}</td>
