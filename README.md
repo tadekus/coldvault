@@ -114,18 +114,24 @@ docker compose ps
 
 Notes:
 
-- `docker compose restart` reloads `.env`, but **volume changes in
-  `docker-compose.yml` need `docker compose up -d`** (recreates the container);
-  add `--force-recreate` if a change doesn't seem to take.
+- `docker compose restart` reloads `.env`, but **volume changes need
+  `docker compose up -d`** (recreates the container); add `--force-recreate` if a
+  change doesn't seem to take.
 - Rebuild with `--build` whenever the app code or `requirements.txt` changed —
   i.e. after every `git pull`.
+- **Machine-specific source-folder mounts go in `docker-compose.override.yml`**, not
+  in `docker-compose.yml`. That file is git-ignored and auto-merged by
+  `docker compose up`, so `git pull` never conflicts with your local mounts and they
+  survive every update. Copy `docker-compose.override.example.yml` to get started
+  (see [Manual uploads](#manual-uploads)). New source folders take effect with
+  `docker compose up -d`.
 - After an update, **hard-refresh the browser** (Ctrl+Shift+R, Cmd+Shift+R on macOS)
   so the new UI assets load instead of the cached ones.
 - New releases sometimes add settings to `.env.example`. Compare it with your `.env`
   after pulling: `diff <(sort .env.example) <(sort .env) | head -30` — anything
   missing falls back to a sane default, so this is optional but worth a look.
-- Your `.env`, index database (`data/`) and downloaded files (`downloads/`) are
-  never touched by updates — they are git-ignored.
+- Your `.env`, `docker-compose.override.yml`, index database (`data/`) and downloaded
+  files (`downloads/`) are never touched by updates — they are git-ignored.
 - Uploads or downloads interrupted by a restart are marked failed and can simply be
   re-run: verified files are skipped, so it resumes where it left off.
 
