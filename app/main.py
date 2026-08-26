@@ -3,10 +3,12 @@ import tempfile
 
 from flask import Flask, jsonify, render_template, request
 
+import audit as audit_mod
 import awsapi
 import config
 import db
 import downloader as downloader_mod
+import notify
 import editlist
 import restore
 import uploader as uploader_mod
@@ -19,6 +21,15 @@ app = Flask(__name__)
 up = uploader_mod.Uploader()
 watch = watcher_mod.Watcher(up)
 down = downloader_mod.Downloader()
+
+
+def _after_upload(sid, trigger):
+    # After a watcher (canary) upload, audit the bucket and email the report.
+    if trigger == "canary" and config.NOTIFY:
+        notify.notify_upload_complete(sid)
+
+
+up.on_session_done = _after_upload
 
 # A bucket picked in the UI is persisted in the DB and overrides the .env value
 _saved_bucket = db.get_setting("bucket")
@@ -62,6 +73,9 @@ def api_status():
         "watch_dirs": config.WATCH_DIRS,
         "canary": config.CANARY_NAME,
         "auto_upload": config.AUTO_UPLOAD,
+        "notify_enabled": config.NOTIFY,
+        "notify_ready": notify.config_problem() is None,
+        "email_to": config.EMAIL_TO,
         "active_mounts": watch.active,
         "queue_size": up.queue_size(),
         "current_session": up.current_session,
@@ -310,63 +324,39 @@ def api_audit():
     """Reconcile the index against the actual bucket contents: flag objects the
     index believes are archived but are missing from S3, size mismatches, and
     storage-class drift; import objects present in the bucket but not indexed."""
-    bucket = config.BUCKET
     try:
-        remote = {}
-        for obj in awsapi.list_all_objects(bucket, config.PREFIX):
-            if not obj["Key"].endswith("/"):
-                remote[obj["Key"]] = obj
+        return jsonify(audit_mod.run_audit(config.BUCKET))
     except AwsError as e:
         return jsonify({"error": str(e)[:500]}), 502
 
-    db.clear_audit(bucket)
-    when = db.now()
-    indexed = db.files_for_audit(bucket)
-    indexed_keys = {r["key"] for r in indexed}
-    missing, size_mismatch, class_drift, ok = [], [], [], 0
 
-    for r in indexed:
-        obj = remote.get(r["key"])
-        if obj is None:
-            db.set_audit(r["id"], "missing", when)
-            missing.append(r["key"])
-        elif r["size"] is not None and obj.get("Size") is not None \
-                and int(r["size"]) != int(obj["Size"]):
-            db.set_audit(r["id"], "size_mismatch", when)
-            size_mismatch.append({"key": r["key"], "index": r["size"], "bucket": obj["Size"]})
-        elif obj.get("StorageClass") and obj["StorageClass"] != config.STORAGE_CLASS:
-            db.set_audit(r["id"], "class_drift", when)
-            class_drift.append({"key": r["key"], "class": obj["StorageClass"]})
-        else:
-            db.set_audit(r["id"], "ok", when)
-            ok += 1
+@app.post("/api/notify/test")
+def api_notify_test():
+    problem = notify.config_problem()
+    if problem:
+        return jsonify({"ok": False, "error": problem}), 400
+    ok, detail = notify.send_email(
+        "ColdVault test email",
+        "<div style='font-family:sans-serif'>✅ ColdVault email notifications are "
+        "configured correctly.</div>")
+    if ok:
+        return jsonify({"ok": True, "id": detail})
+    return jsonify({"ok": False, "error": detail}), 502
 
-    imported = 0
-    for key, obj in remote.items():
-        if key not in indexed_keys and not db.get_file(bucket, key):
-            db.upsert_file(bucket, key, size=obj.get("Size"),
-                           etag=(obj.get("ETag") or "").strip('"'),
-                           storage_class=obj.get("StorageClass"),
-                           status="remote", uploaded_at=obj.get("LastModified"),
-                           audit_state="ok", audited_at=when)
-            imported += 1
 
-    level = "ERROR" if missing else ("WARNING" if (size_mismatch or class_drift) else "INFO")
-    log_event(level, "audit",
-              f"bucket audit of s3://{bucket}: {ok} ok, {len(missing)} MISSING, "
-              f"{len(size_mismatch)} size mismatch, {len(class_drift)} class drift, "
-              f"{imported} imported ({len(remote)} objects in bucket)")
-    for k in missing:
-        log_event("ERROR", "audit", f"MISSING from bucket (index says archived): {k}")
-    for m in size_mismatch:
-        log_event("WARNING", "audit",
-                  f"size mismatch: {m['key']} index={m['index']} bucket={m['bucket']}")
-
-    return jsonify({"bucket": bucket, "in_bucket": len(remote), "in_index": len(indexed),
-                    "ok": ok, "missing": missing[:200], "missing_count": len(missing),
-                    "size_mismatch": size_mismatch[:200], "size_mismatch_count": len(size_mismatch),
-                    "class_drift": class_drift[:200], "class_drift_count": len(class_drift),
-                    "imported": imported})
+@app.post("/api/notify/report")
+def api_notify_report():
+    """Run an audit now and email the report on demand."""
+    problem = notify.config_problem()
+    if problem:
+        return jsonify({"ok": False, "error": problem}), 400
+    try:
+        ok, detail = notify.send_audit_report()
+    except AwsError as e:
+        return jsonify({"ok": False, "error": str(e)[:500]}), 502
+    if ok:
+        return jsonify({"ok": True, "id": detail})
+    return jsonify({"ok": False, "error": detail}), 502
 
 
 def _allowed_dest(path):

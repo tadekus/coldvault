@@ -38,6 +38,8 @@ everything it does.
   demand: flags objects the index thinks are archived but are missing from S3, size
   mismatches, and storage-class drift, and imports anything new. Paginated, so it
   scales past 1000 objects.
+- **Email reports (Resend)** — after each canary upload, optionally run an audit and
+  email a report (what was archived, bucket size, audit status); or send one on demand.
 - **Restore tracking** — restore requests are logged and polled via `head-object` until
   S3 reports the object is available, including its expiry date.
 - **Verified downloads** — restored objects are fetched back to a local folder with
@@ -393,6 +395,28 @@ it stands out. Re-running the audit refreshes all badges, so once you've fixed
 something (e.g. re-uploaded a missing file) the flag clears. The audit reads object
 metadata only (`list-objects-v2`); it does not restore or download anything, so it is
 cheap to run and safe on Deep Archive data.
+
+## Email notifications (Resend)
+
+ColdVault can email you a report after each automatic (canary) upload — what was
+archived, the current bucket size, and the audit result — using
+[Resend](https://resend.com). Configure in `.env`:
+
+```
+COLDVAULT_NOTIFY=true
+RESEND_API_KEY=re_...
+COLDVAULT_EMAIL_FROM=ColdVault <coldvault@your-verified-domain.com>
+COLDVAULT_EMAIL_TO=you@example.com          # comma-separate for several
+```
+
+With `COLDVAULT_NOTIFY=true`, every watcher/canary upload is followed by a bucket audit
+and a report email (subject notes whether the audit was **OK** or **found issues**, and
+issues are listed in the body). Manual uploads don't email.
+
+The **Email notifications** box on the dashboard also lets you **Email an audit report
+on demand** (runs an audit now and mails it) and **Send a test email** to verify the
+setup. The sender address must be on a domain verified in your Resend account (or use
+`onboarding@resend.dev` for a quick test).
 
 ## Performance tuning
 

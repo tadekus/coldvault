@@ -4,6 +4,17 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.1.0
+
+- **Email notifications via Resend.** After each canary/watcher upload, ColdVault runs
+  a bucket audit and emails a report (what was archived, current bucket size, audit
+  status) when `COLDVAULT_NOTIFY=true`. Configure `RESEND_API_KEY`,
+  `COLDVAULT_EMAIL_FROM`, `COLDVAULT_EMAIL_TO` in `.env`.
+- Dashboard **Email notifications** box: **Email audit report now** (on-demand audit +
+  report) and **Send test email**.
+- Audit logic extracted into a reusable module shared by the endpoint and the hook;
+  audit report now includes total bucket size.
+
 ## 1.0.0
 
 First versioned build. Established feature set:

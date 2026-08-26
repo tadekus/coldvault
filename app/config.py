@@ -67,6 +67,13 @@ PART_WORKERS = max(1, env_int("COLDVAULT_PART_WORKERS", 4))
 
 RESTORE_POLL = max(60, env_int("COLDVAULT_RESTORE_POLL_MINUTES", 60) * 60)
 
+# --- Email notifications (Resend) ---
+# After each canary/watcher upload: run an audit and email a report.
+NOTIFY = env_bool("COLDVAULT_NOTIFY", False)
+RESEND_API_KEY = env("RESEND_API_KEY")
+EMAIL_FROM = env("COLDVAULT_EMAIL_FROM")
+EMAIL_TO = _csv("COLDVAULT_EMAIL_TO")
+
 DOWNLOAD_DIR = env("COLDVAULT_DOWNLOAD_DIR", "/downloads")
 DOWNLOAD_WORKERS = max(1, env_int("COLDVAULT_DOWNLOAD_WORKERS", 2))
 DOWNLOAD_PART_WORKERS = max(1, env_int("COLDVAULT_DOWNLOAD_PART_WORKERS", 4))
