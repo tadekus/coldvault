@@ -32,7 +32,8 @@ everything it does.
   upload speed, source path, session) is stored in SQLite. Search by any part of the
   key, select individual objects, and request **Standard** (~12 h) or **Bulk** (~48 h)
   restores. Deep Archive restores objects, not folders — the index is how you find the
-  exact objects you need.
+  exact objects you need. The Index defaults to **newest-first** so a fresh upload
+  shows at the top; switch to **Name A–Z** with the sort dropdown.
 - **Integrity audit** — reconcile the index against the actual bucket contents on
   demand: flags objects the index thinks are archived but are missing from S3, size
   mismatches, and storage-class drift, and imports anything new. Paginated, so it

@@ -198,6 +198,7 @@ def api_files():
         q=request.args.get("q"),
         status=request.args.get("status") or None,
         session_id=request.args.get("session_id") or None,
+        sort=request.args.get("sort") or "new",
         limit=request.args.get("limit", 100),
         offset=request.args.get("offset", 0),
     )
