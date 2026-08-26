@@ -83,6 +83,12 @@ button:disabled { opacity: .5; cursor: default; }
   padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; text-decoration: none;
 }
 .browse a:hover { border-color: var(--accent); }
+.browse-item { display: flex; align-items: center; gap: 8px; padding: 2px 2px; width: 100%; }
+.browse-item input[type=checkbox] { flex: none; }
+.browse-item a.navdir { color: var(--accent); cursor: pointer; text-decoration: none; }
+.browse-item a.navdir:hover { text-decoration: underline; }
+.browse-item .fname { font-family: ui-monospace, monospace; font-size: 12px; }
+#browseList { margin-top: 8px; }
 
 .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

@@ -61,12 +61,39 @@ class Uploader:
     def __init__(self):
         self.q = queue.Queue()
         self.current_session = None
+        self._selections = {}   # sid -> explicit list of selected paths
         threading.Thread(target=self._loop, daemon=True, name="uploader").start()
 
-    def enqueue(self, path, label, trigger):
-        sid = db.create_session(config.BUCKET, path, label, trigger)
+    @staticmethod
+    def _common_base(items):
+        """Given selected absolute paths, drop any nested under a selected dir,
+        then return (base, pruned) where base is the common parent directory the
+        keys are made relative to (so selecting a folder == uploading it whole)."""
+        items = [os.path.realpath(i) for i in items]
+        dirs = [i for i in items if os.path.isdir(i)]
+        pruned = [i for i in items
+                  if not any(i != d and i.startswith(d + os.sep) for d in dirs)]
+        pruned = sorted(set(pruned))
+        base = os.path.commonpath(pruned) if len(pruned) > 1 else pruned[0]
+        if not os.path.isdir(base):
+            base = os.path.dirname(base)
+        return base, pruned
+
+    def enqueue(self, path, label, trigger, items=None):
+        if items:
+            base, pruned = self._common_base(items)
+            source = base
+        else:
+            source = path
+            pruned = None
+        if not label:
+            label = os.path.basename(source.rstrip("/")) or "upload"
+        sid = db.create_session(config.BUCKET, source, label, trigger)
+        if pruned is not None:
+            self._selections[sid] = pruned
+        what = f"{len(pruned)} selected item(s) under {source}" if pruned else source
         log_event("INFO", "upload",
-                  f"Session #{sid} queued: {path} -> s3://{config.BUCKET} "
+                  f"Session #{sid} queued: {what} -> s3://{config.BUCKET} "
                   f"(label='{label}', trigger={trigger})")
         self.q.put(sid)
         return sid
@@ -105,11 +132,29 @@ class Uploader:
                 found.append((p, st.st_size, st.st_mtime))
         return found
 
+    def _scan_items(self, items):
+        """Scan an explicit selection: directories are walked, files taken as-is."""
+        found = []
+        for it in items:
+            if os.path.isdir(it):
+                found.extend(self._scan(it))
+            elif os.path.isfile(it):
+                fn = os.path.basename(it)
+                if _excluded(fn) or fn == config.CANARY_NAME:
+                    continue
+                try:
+                    st = os.stat(it)
+                except OSError:
+                    continue
+                found.append((it, st.st_size, st.st_mtime))
+        return found
+
     def _run_session(self, sid):
         s = db.get_session(sid)
         root, label, bucket = s["source"], s["label"], s["bucket"]
         db.update_session(sid, status="scanning")
-        files = self._scan(root)
+        sel = self._selections.pop(sid, None)
+        files = self._scan_items(sel) if sel else self._scan(root)
         total_bytes = sum(f[1] for f in files)
         db.update_session(sid, total_files=len(files), total_bytes=total_bytes, status="running")
         log_event("INFO", "upload",

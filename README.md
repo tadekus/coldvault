@@ -261,7 +261,24 @@ click one to start browsing. Each root is checked live inside the container: rea
 roots are clickable, while ones that are configured but missing show as *(not mounted)*
 and ones present but without permission show as *(not readable)* — a quick way to
 confirm a new volume mount actually landed. Drilling into a folder lists its subfolders
-and its files (with sizes), and **Start upload** archives the selected folder.
+and its files (with sizes).
+
+### Uploading a whole folder or just parts of it
+
+Each folder and file in the browser has a checkbox:
+
+- **Tick nothing** and **Start upload** archives the whole current folder (the original
+  behaviour).
+- **Tick specific folders and/or files** and only those are uploaded — folders
+  recursively. **Select all here** ticks everything in the current listing, **Clear
+  selection** empties it, and the selection **persists as you navigate**, so you can
+  gather items from several subfolders into one upload.
+
+Keys mirror the structure under the **common parent** of your selection, so selecting a
+folder produces exactly the same keys as a whole-folder upload of it, and picking two
+day folders keeps them both under the project (`Project/Day01/…`, `Project/Day02/…`).
+The label field overrides the top-level prefix. Already-verified and duplicate content
+is skipped as usual.
 
 ## Restoring
 
