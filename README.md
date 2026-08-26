@@ -152,7 +152,11 @@ Notes:
 
 2. Plug the drive in. The watcher polls the watch roots (Debian: `/media`,
    macOS: `/Volumes` via the container's `/media`) every `COLDVAULT_WATCH_INTERVAL`
-   seconds.
+   seconds, scanning up to two levels deep (so `/media/<user>/<label>` is covered).
+   A drive **without** the canary is ignored entirely — the canary is what opts a
+   drive in. The watcher is filesystem-agnostic: it reads files through normal
+   paths, so any filesystem the host can mount and read works (ext4, XFS, btrfs,
+   ZFS, exFAT, NTFS, FAT32, HFS+, APFS, …).
 
 3. ColdVault detects the canary and uploads everything as
    `<COLDVAULT_PREFIX>/<label>/<relative path>`, e.g.
@@ -172,6 +176,41 @@ you can start uploads manually from the dashboard.
 > 180-day minimum storage charge per object (deleting earlier still bills the full
 > 180 days). When testing, use a drive containing only a small folder — or disable
 > auto-upload and use a manual upload instead.
+
+### Hot-plug and mount propagation
+
+For the watcher to see a drive plugged in **after** the container started, the
+`/media` bind mount must propagate new host mounts into the container. Docker bind
+mounts default to `rprivate`, which does **not** — so the provided compose files
+mount `/media` with `propagation: rslave`:
+
+```yaml
+- type: bind
+  source: /media          # /Volumes on the macOS variant
+  target: /media
+  read_only: true
+  bind:
+    propagation: rslave
+```
+
+On Linux this requires the host root to be a **shared** mount. systemd makes `/`
+shared by default; if hot-plugged drives still don't appear, run once:
+
+```bash
+sudo mount --make-rshared /
+```
+
+Verify from inside the container after plugging a drive in:
+
+```bash
+docker compose exec coldvault ls /media/$USER
+```
+
+If your drive shows on the host but not there, propagation isn't reaching the
+container. On **macOS**, Docker Desktop shares `/Volumes` through a VM, so hot-plug
+visibility is best-effort — plug the drive in before `up`, or restart the container
+after plugging in. (If Docker Desktop rejects the propagation setting, revert that
+block to the simple `- /Volumes:/media:ro`.)
 
 ## Manual uploads
 

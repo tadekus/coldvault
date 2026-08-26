@@ -18,7 +18,18 @@ services:
       - ./data:/data
       # Restored files land here (read-write)
       - ./downloads:/downloads
-      - /Volumes:/media:ro
+      # /Volumes -> /media with rslave so drives mounted after the container
+      # started can propagate in. NOTE: on macOS, Docker Desktop runs a Linux VM
+      # and shares /Volumes over VirtioFS, so hot-plug visibility is best-effort —
+      # for reliable testing, plug the drive in BEFORE `up`, or restart the
+      # container after plugging in. If Docker Desktop rejects the propagation
+      # setting, replace this block with the simple `- /Volumes:/media:ro`.
+      - type: bind
+        source: /Volumes
+        target: /media
+        read_only: true
+        bind:
+          propagation: rslave
       # Optional: a local folder for manual-upload tests. Uncomment both the
       # mount and the browse root:
       # - ${HOME}/coldvault-test:/testdata:ro
