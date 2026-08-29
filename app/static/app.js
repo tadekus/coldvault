@@ -520,14 +520,22 @@ async function loadDownloads() {
 
   $("#restoredTable tbody").innerHTML = r.items.map(i => {
     const id = selId(i.bucket, i.key);
-    return `<tr>
-      <td><input type="checkbox" class="dlsel" data-id="${esc(id)}" ${dlSelected.has(id) ? "checked" : ""}></td>
+    const local = i.local_state === "present"
+      ? `<span class="chip verified">on disk</span> <span class="mono muted" style="font-size:10px">${esc(i.downloaded_to)}</span>`
+      : i.local_state === "deleted"
+      ? `<span class="chip failed">deleted</span>${i.prev_path ? ` <span class="mono muted" style="font-size:10px">was ${esc(i.prev_path)}</span>` : ""}`
+      : `<span class="muted">not downloaded</span>`;
+    const expiryCell = i.expired
+      ? `<span class="chip failed">expired</span>`
+      : `<span class="mono">${esc(i.expiry || "—")}</span>`;
+    return `<tr${i.expired ? ' style="opacity:.55"' : ""}>
+      <td><input type="checkbox" class="dlsel" data-id="${esc(id)}" ${dlSelected.has(id) ? "checked" : ""}${i.expired ? " disabled title='restore expired — re-request in the Index tab'" : ""}></td>
       <td class="mono">${esc(i.bucket)}</td>
       <td class="key">${esc(i.key)}</td>
       <td class="num">${fmtBytes(i.size)}</td>
       <td>${esc(i.tier || "—")}</td>
-      <td class="mono">${esc(i.expiry || "—")}</td>
-      <td class="mono">${i.downloaded_to ? "✔ " + esc(i.downloaded_to) : "—"}</td>
+      <td>${expiryCell}</td>
+      <td>${local}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="7" class="muted" style="padding:20px">
       no completed restores yet — request restores in the Index tab, they appear here once S3 reports them ready</td></tr>`;
@@ -566,8 +574,19 @@ async function loadDownloads() {
 
 $("#btnDlRefresh").onclick = loadDownloads;
 
+$("#btnDlVerify").onclick = async () => {
+  $("#dlSummary").textContent = "checking local files…";
+  try {
+    const r = await api("/api/download/verify", { method: "POST" });
+    $("#dlSummary").textContent = `checked ${r.checked} downloaded file(s) — ${r.deleted} now missing`;
+    loadDownloads();
+  } catch (e) {
+    $("#dlSummary").textContent = "✘ " + e.message;
+  }
+};
+
 $("#dlSelAllBox").onchange = e => {
-  $$("#restoredTable .dlsel").forEach(cb => {
+  $$("#restoredTable .dlsel:not([disabled])").forEach(cb => {
     cb.checked = e.target.checked;
     const item = restoredCache.find(x => selId(x.bucket, x.key) === cb.dataset.id);
     cb.checked ? dlSelected.set(cb.dataset.id, item) : dlSelected.delete(cb.dataset.id);
@@ -575,8 +594,18 @@ $("#dlSelAllBox").onchange = e => {
   updateDlCount();
 };
 
+// select every restored object that hasn't expired
 $("#btnDlSelAll").onclick = () => {
-  restoredCache.forEach(i => dlSelected.set(selId(i.bucket, i.key), i));
+  restoredCache.filter(i => !i.expired)
+    .forEach(i => dlSelected.set(selId(i.bucket, i.key), i));
+  updateDlCount();
+  loadDownloads();
+};
+
+// select only objects not already on disk (and not expired) — skips redundant re-downloads
+$("#btnDlSelNew").onclick = () => {
+  restoredCache.filter(i => !i.expired && i.local_state !== "present")
+    .forEach(i => dlSelected.set(selId(i.bucket, i.key), i));
   updateDlCount();
   loadDownloads();
 };

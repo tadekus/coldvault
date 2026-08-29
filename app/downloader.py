@@ -25,6 +25,41 @@ def fmt_speed(bps):
         bps /= 1024
 
 
+def restore_expired(expiry):
+    """True if an S3 restore expiry-date (e.g. 'Fri, 31 Jul 2026 00:00:00 GMT')
+    is in the past — the object is no longer available to download."""
+    if not expiry:
+        return False
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+        exp = parsedate_to_datetime(expiry)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp < datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
+def verify_local_downloads():
+    """Check that files recorded as downloaded still exist on the local
+    filesystem; mark any that were deleted so the UI reflects reality.
+    Returns (checked, deleted)."""
+    checked = deleted = 0
+    for r in db.downloaded_rows_to_check():
+        checked += 1
+        p = r["local_path"]
+        if not p or not os.path.exists(p):
+            db.update_download(r["id"], status="deleted",
+                               error="file no longer on local filesystem")
+            deleted += 1
+            log_event("WARNING", "download",
+                      f"local file gone: {p or '(no path)'} (was s3://{r['bucket']}/{r['key']})")
+    log_event("INFO", "download",
+              f"local integrity check: {checked} downloaded file(s), {deleted} now missing")
+    return checked, deleted
+
+
 def plan_within_budget(items, budget):
     """Order-preserving greedy pack: keep each item whose size still fits the
     remaining budget, skip the ones that don't. Returns (fit, skipped, used)."""

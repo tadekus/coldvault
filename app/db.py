@@ -428,11 +428,19 @@ def list_downloads(session_id=None, limit=500):
     return _rows("SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,))
 
 
-def completed_downloads_map():
-    """(bucket, key) -> local_path of the most recent successful download."""
-    rows = _rows("""SELECT bucket, key, local_path FROM downloads
-                    WHERE status IN ('verified','downloaded') ORDER BY id""")
-    return {(r["bucket"], r["key"]): r["local_path"] for r in rows}
+def latest_downloads_map():
+    """(bucket, key) -> {local_path, status} of the most recent download (any
+    status). Later rows overwrite earlier, so the latest wins."""
+    rows = _rows("SELECT bucket, key, local_path, status FROM downloads ORDER BY id")
+    return {(r["bucket"], r["key"]): {"local_path": r["local_path"], "status": r["status"]}
+            for r in rows}
+
+
+def downloaded_rows_to_check():
+    """Download records that claim a local file exists, for integrity checking.
+    'skipped' means the file was already present at download time."""
+    return _rows("SELECT id, bucket, key, local_path FROM downloads "
+                 "WHERE status IN ('verified','downloaded','skipped')")
 
 
 def fail_stale_downloads():
