@@ -367,12 +367,35 @@ def _allowed_dest(path):
 
 @app.get("/api/restored")
 def api_restored():
-    """Objects whose latest restore completed — i.e. downloadable right now."""
+    """Objects whose latest restore completed — i.e. downloadable right now.
+    Each item is tagged with its local state (present / deleted / none) and
+    whether its restore window has expired."""
     items = db.restored_objects()
-    downloaded = db.completed_downloads_map()
+    dmap = db.latest_downloads_map()
     for i in items:
-        i["downloaded_to"] = downloaded.get((i["bucket"], i["key"]))
+        d = dmap.get((i["bucket"], i["key"]))
+        i["downloaded_to"] = None
+        if d and d["status"] in ("verified", "downloaded", "skipped"):
+            if d["local_path"] and os.path.exists(d["local_path"]):
+                i["local_state"] = "present"
+                i["downloaded_to"] = d["local_path"]
+            else:  # was downloaded, file now gone (integrity check not yet run)
+                i["local_state"] = "deleted"
+                i["prev_path"] = d["local_path"]
+        elif d and d["status"] == "deleted":
+            i["local_state"] = "deleted"
+            i["prev_path"] = d["local_path"]
+        else:  # never downloaded, or a failed attempt -> available to (re)download
+            i["local_state"] = "none"
+        i["expired"] = downloader_mod.restore_expired(i.get("expiry"))
     return jsonify({"items": items, "download_dir": config.DOWNLOAD_DIR})
+
+
+@app.post("/api/download/verify")
+def api_download_verify():
+    """Re-check that downloaded files still exist locally; flag deleted ones."""
+    checked, deleted = downloader_mod.verify_local_downloads()
+    return jsonify({"checked": checked, "deleted": deleted})
 
 
 @app.get("/api/download/browse")
@@ -412,18 +435,30 @@ def api_download():
     if policy == "cancel":
         return jsonify({"cancelled": True})
 
-    # Disk-space pre-flight against the destination filesystem.
+    # Disk-space pre-flight against the destination filesystem. Files already
+    # present at the target with a matching size will be skipped by the
+    # downloader, so they don't count toward the space needed.
+    def _needs_download(it):
+        try:
+            target = downloader_mod.safe_dest(dest, it["key"])
+            return not (os.path.exists(target) and int(it.get("size") or 0)
+                        and os.path.getsize(target) == int(it["size"]))
+        except Exception:
+            return True
+
     st = os.statvfs(dest)
     free = st.f_bavail * st.f_frsize
     budget = free - config.DOWNLOAD_MIN_FREE
-    required = sum(int(i.get("size") or 0) for i in items)
+    to_fetch = [i for i in items if _needs_download(i)]
+    required = sum(int(i.get("size") or 0) for i in to_fetch)
 
-    if required <= budget:
+    # Nothing to fetch (all already on disk), or it all fits -> proceed.
+    if not to_fetch or required <= budget:
         sid = down.enqueue(dest, items)
         return jsonify({"session_id": sid})
 
-    # Won't all fit — work out what does (order-preserving).
-    fit, skipped, used = downloader_mod.plan_within_budget(items, budget)
+    # Won't all fit — work out which of the to-fetch files do (order-preserving).
+    fit, skipped, used = downloader_mod.plan_within_budget(to_fetch, budget)
 
     if policy == "fit":
         if not fit:

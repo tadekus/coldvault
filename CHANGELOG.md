@@ -4,6 +4,18 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.2.0
+
+- **Local download integrity check.** The Downloads tab now tracks whether each
+  restored object's downloaded file still exists on disk. **Check local files** re-scans
+  and flags any that were deleted, so a removed file no longer appears as downloaded.
+- Restored list shows each object's **local state** (on disk / deleted / not downloaded)
+  and marks restores whose **window has expired** (their checkbox is disabled — re-request
+  in the Index tab). New **Select not-downloaded** helper skips redundant re-downloads.
+- Disk-space pre-flight now ignores files already present at the destination (they'd be
+  skipped anyway), so the fit check reflects what will actually be fetched; a selection
+  that's entirely on disk proceeds even on a full disk.
+
 ## 1.1.1
 
 - Fix Resend calls failing with Cloudflare **403 error 1010**: send a real

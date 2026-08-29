@@ -339,10 +339,18 @@ leaving a corrupt file. Files already present locally with a matching size and
 checksum are skipped, so an interrupted job resumes cheaply.
 
 Before starting, ColdVault checks the selection fits the destination filesystem
-(keeping `COLDVAULT_DOWNLOAD_MIN_FREE_MB` free, default 200). If it doesn't, it asks
+(keeping `COLDVAULT_DOWNLOAD_MIN_FREE_MB` free, default 200). Files already on disk at
+the destination don't count (they'd be skipped anyway). If the rest won't fit, it asks
 whether to **download only the files that fit** (it keeps each file whose size still
 fits the remaining space and skips the ones that don't) or **cancel the whole
 download** — nothing is written until you choose.
+
+The restored list tags each object with its **local state** — *on disk*, *deleted*
+(was downloaded, since removed), or *not downloaded* — and marks restores whose window
+has **expired** (no longer downloadable; re-request them in the Index tab). **Check
+local files** re-scans the destination and flags anything you've deleted, so a file
+removed from disk stops showing as downloaded. **Select not-downloaded** picks only the
+objects you don't already have.
 
 Large objects are fetched with **parallel ranged GETs**
 (`COLDVAULT_DOWNLOAD_PART_WORKERS`, default 4) written directly into the target file,
