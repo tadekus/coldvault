@@ -4,6 +4,13 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.3.0
+
+- **Clear local index** (dashboard → Connection). Wipe index metadata for one bucket
+  (e.g. after deleting/migrating a bucket) or the whole database, guarded by a typed
+  confirmation (the bucket name, or `ALL`). Only the local index is affected — S3 data
+  is never touched, and the active-bucket setting is preserved.
+
 ## 1.2.0
 
 - **Local download integrity check.** The Downloads tab now tracks whether each

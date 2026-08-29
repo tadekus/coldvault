@@ -52,6 +52,7 @@ async function loadDashboard() {
   try {
     const [st, stats] = await Promise.all([api("/api/status"), api("/api/stats")]);
     $("#bucketBadge").textContent = `s3://${st.bucket || "?"} · ${st.storage_class}`;
+    $("#bucketBadge").dataset.bucket = st.bucket || "";
 
     const f = stats.files || {};
     const g = k => f[k] || { count: 0, bytes: 0 };
@@ -108,6 +109,28 @@ $("#btnSync").onclick = async () => {
     $("#testResult").textContent = `✔ imported ${r.imported} of ${r.listed} listed objects`;
   } catch (e) {
     $("#testResult").textContent = "✘ " + e.message;
+  }
+};
+
+$("#btnClearIndex").onclick = async () => {
+  const which = prompt(
+    "Clear the LOCAL INDEX (metadata only — this does NOT delete anything from S3).\n\n" +
+    "Type a bucket name to wipe just that bucket's records,\n" +
+    "or type  ALL  to wipe the whole database:", $("#bucketBadge").dataset.bucket || "");
+  if (which === null) return;
+  const val = which.trim();
+  if (!val) return;
+  const everything = val.toUpperCase() === "ALL";
+  const expected = everything ? "ALL" : val;
+  if (!confirm(`Really remove local index records for ${everything ? "ALL buckets" : "bucket '" + val + "'"}?\n` +
+               `This can't be undone (but your S3 data is untouched).`)) return;
+  $("#clearResult").textContent = "clearing…";
+  try {
+    const r = await api("/api/index/clear", { body: { bucket: everything ? "*" : val, confirm: expected } });
+    $("#clearResult").textContent = `✔ cleared ${r.cleared}: ${r.total} record(s) removed`;
+    loadDashboard();
+  } catch (e) {
+    $("#clearResult").textContent = "✘ " + e.message;
   }
 };
 

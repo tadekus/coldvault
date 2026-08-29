@@ -456,6 +456,9 @@ or just divide it.
 - `COLDVAULT_BUCKET` in `.env` is the initial bucket. You can also click
   **List buckets** on the dashboard and pick one there — that choice is persisted in
   `./data` and overrides the `.env` value until you pick another.
+- **Migrating/deleting a bucket?** Use **Clear local index** (dashboard → Connection) to
+  remove that bucket's stale index records — or the whole database — with a typed
+  confirmation. It only clears the local index; it never deletes anything from S3.
 - The index/DB and logs persist in `./data` (bind-mounted to `/data`). The database
   (`data/coldvault.db`) is your file inventory — worth backing up occasionally.
 - The web UI has no authentication — bind it to localhost or your LAN only
