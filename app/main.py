@@ -125,6 +125,26 @@ def api_set_bucket():
     return jsonify({"ok": True, "bucket": name})
 
 
+@app.post("/api/index/clear")
+def api_index_clear():
+    """Wipe local index metadata for a bucket (or all). Only the local database
+    is affected — S3 objects are never touched. Requires a typed confirmation
+    matching the bucket name (or 'ALL') to prevent accidents."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip()
+    confirm = (data.get("confirm") or "").strip()
+    everything = bucket in ("", "*", "ALL")
+    expected = "ALL" if everything else bucket
+    if confirm != expected:
+        return jsonify({"error": f"confirmation must equal '{expected}'"}), 400
+    counts = db.clear_index("*" if everything else bucket)
+    total = sum(counts.values())
+    log_event("WARNING", "app",
+              f"local index cleared for {expected}: {total} row(s) removed {counts}")
+    # If we wiped the active bucket's data, that's fine — the bucket setting stays.
+    return jsonify({"ok": True, "cleared": expected, "counts": counts, "total": total})
+
+
 @app.get("/api/browse/roots")
 def api_browse_roots():
     """The configured upload roots (watch dirs + COLDVAULT_BROWSE_ROOTS), each

@@ -463,6 +463,25 @@ def restored_objects():
         ORDER BY r.bucket, r.key""")
 
 
+# ---- maintenance ----
+
+def clear_index(bucket):
+    """Delete local index metadata. bucket=None/'*' wipes everything (files,
+    sessions, restores, downloads); a name wipes just that bucket. Never touches
+    S3 — only the local database. Settings and the event log are preserved.
+    Returns per-table row counts removed."""
+    counts = {}
+    if bucket in (None, "*", ""):
+        for t in ("files", "restores", "downloads", "sessions", "dl_sessions"):
+            counts[t] = _exec(f"DELETE FROM {t}").rowcount
+    else:
+        counts["files"] = _exec("DELETE FROM files WHERE bucket=?", (bucket,)).rowcount
+        counts["restores"] = _exec("DELETE FROM restores WHERE bucket=?", (bucket,)).rowcount
+        counts["downloads"] = _exec("DELETE FROM downloads WHERE bucket=?", (bucket,)).rowcount
+        counts["sessions"] = _exec("DELETE FROM sessions WHERE bucket=?", (bucket,)).rowcount
+    return counts
+
+
 # ---- restores ----
 
 def add_restore(bucket, key, tier, days, status, error=None):
