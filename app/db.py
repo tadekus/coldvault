@@ -360,6 +360,19 @@ def clear_audit(bucket):
     _exec("UPDATE files SET audit_state=NULL WHERE bucket=?", (bucket,))
 
 
+def manifest_summary(bucket):
+    """Counts of files by manifest_state for a bucket (only rows that have one)."""
+    return {r["manifest_state"]: r["c"] for r in _rows(
+        "SELECT manifest_state, COUNT(*) c FROM files "
+        "WHERE bucket=? AND manifest_state IS NOT NULL GROUP BY manifest_state", (bucket,))}
+
+
+def manifest_mismatch_keys(bucket, limit=200):
+    return [r["key"] for r in _rows(
+        "SELECT key FROM files WHERE bucket=? AND manifest_state='mismatch' "
+        "ORDER BY key LIMIT ?", (bucket, limit))]
+
+
 def distinct_buckets():
     return [r["bucket"] for r in _rows(
         "SELECT DISTINCT bucket FROM files ORDER BY bucket")]

@@ -4,6 +4,14 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.5.0
+
+- **Audit re-surfaces the offload-manifest check.** The bucket audit now reports how
+  many objects are manifest-verified vs mismatched, flags any mismatch as an audit
+  finding (so it shows up in every audit and email report, not just at upload), and logs
+  mismatches as errors. Deep Archive can't be re-hashed without a restore, so this
+  re-checks the manifest result recorded at upload rather than the object bytes.
+
 ## 1.4.0
 
 - **Offload manifest cross-check.** If a source folder contains a checksum manifest CSV

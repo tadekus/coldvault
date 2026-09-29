@@ -148,7 +148,7 @@ $("#btnAudit").onclick = async () => {
   $("#auditResult").innerHTML = "auditing bucket (may take a while on big buckets)…";
   try {
     const r = await api("/api/audit", { method: "POST" });
-    const problems = r.missing_count + r.size_mismatch_count + r.class_drift_count;
+    const problems = r.missing_count + r.size_mismatch_count + r.class_drift_count + (r.manifest_mismatch_count || 0);
     let msg = problems
       ? `<span style="color:var(--err)">⚠ ${problems} issue(s)</span> — `
       : `<span style="color:var(--ok)">✔ all good</span> — `;
@@ -158,6 +158,9 @@ $("#btnAudit").onclick = async () => {
       (r.missing.length ? `: <span class="mono" style="font-size:11px">${r.missing.slice(0,10).map(esc).join(", ")}${r.missing_count>10?" …":""}</span>` : "");
     if (r.size_mismatch_count) msg += `<br><span style="color:var(--warn)">${r.size_mismatch_count} size mismatch</span>`;
     if (r.class_drift_count) msg += `<br><span style="color:var(--warn)">${r.class_drift_count} in unexpected storage class</span>`;
+    if (r.manifest_mismatch_count) msg += `<br><span style="color:var(--err)">${r.manifest_mismatch_count} offload-manifest mismatch</span>` +
+      (r.manifest_mismatch && r.manifest_mismatch.length ? `: <span class="mono" style="font-size:11px">${r.manifest_mismatch.slice(0,10).map(esc).join(", ")}</span>` : "");
+    if (r.manifest_ok) msg += `<br><span class="muted">${r.manifest_ok} file(s) verified against offload manifests</span>`;
     msg += `<br><span class="muted">Flagged files are badged in the Index tab. See the Logs (category: audit).</span>`;
     $("#auditResult").innerHTML = msg;
     if (activeTab === "files") loadFiles();

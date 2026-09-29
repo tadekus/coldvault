@@ -56,18 +56,29 @@ def run_audit(bucket=None):
                                audit_state="ok", audited_at=when)
                 imported += 1
 
-    level = "ERROR" if missing else ("WARNING" if (size_mismatch or class_drift) else "INFO")
+    # Re-surface the offload-manifest verification recorded at upload time, so a
+    # mismatch is flagged by every audit, not only when it was first uploaded.
+    msummary = db.manifest_summary(bucket)
+    m_ok = msummary.get("ok", 0)
+    m_mismatch = msummary.get("mismatch", 0)
+    m_not_listed = msummary.get("not_in_manifest", 0)
+    m_keys = db.manifest_mismatch_keys(bucket)
+
+    level = "ERROR" if (missing or m_mismatch) else ("WARNING" if (size_mismatch or class_drift) else "INFO")
     log_event(level, "audit",
               f"bucket audit of s3://{bucket}: {ok} ok, {len(missing)} MISSING, "
               f"{len(size_mismatch)} size mismatch, {len(class_drift)} class drift, "
+              f"{m_mismatch} manifest mismatch ({m_ok} manifest-verified), "
               f"{imported} imported ({len(remote)} objects in bucket)")
     for k in missing:
         log_event("ERROR", "audit", f"MISSING from bucket (index says archived): {k}")
     for m in size_mismatch:
         log_event("WARNING", "audit",
                   f"size mismatch: {m['key']} index={m['index']} bucket={m['bucket']}")
+    for k in m_keys:
+        log_event("ERROR", "audit", f"manifest mismatch (offload hash != archived): {k}")
 
-    problems = len(missing) + len(size_mismatch) + len(class_drift)
+    problems = len(missing) + len(size_mismatch) + len(class_drift) + m_mismatch
     return {
         "bucket": bucket, "ok_status": problems == 0,
         "in_bucket": len(remote), "in_index": len(indexed), "bucket_bytes": total_bytes,
@@ -75,4 +86,6 @@ def run_audit(bucket=None):
         "missing": missing[:200], "missing_count": len(missing),
         "size_mismatch": size_mismatch[:200], "size_mismatch_count": len(size_mismatch),
         "class_drift": class_drift[:200], "class_drift_count": len(class_drift),
+        "manifest_ok": m_ok, "manifest_mismatch_count": m_mismatch,
+        "manifest_not_listed": m_not_listed, "manifest_mismatch": m_keys[:200],
     }
