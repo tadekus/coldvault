@@ -413,6 +413,12 @@ audit and email report, not only when it was first uploaded. (Deep Archive objec
 be re-hashed without a restore, so the audit re-checks the result recorded at upload
 rather than re-reading the bytes.)
 
+When you actually **download** a restored object, ColdVault does the *byte-level*
+re-verify: it recomputes the manifest hash from the restored bytes (in the same read pass
+as the download's SHA-256 check) and compares it to the offload value — the strongest
+confirmation that what came back from Deep Archive still matches what the DIT recorded.
+Results show as `csv✓` / `csv✗` in the Downloaded-files table.
+
 ## Integrity audit
 
 Uploads are checksum-verified when they happen, but for cold storage it's worth

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import awsapi
 import config
 import db
+import manifest
 from awsapi import AwsError
 from logs import log_event
 
@@ -84,12 +85,17 @@ def safe_dest(dest_root, key):
     return target
 
 
-def _hash_file(path):
+def _hash_file(path, extra_algo=None):
+    """SHA-256 of the file, plus optionally a second digest (e.g. the offload
+    manifest's xxh64) in the same read pass. Returns (sha_hex, extra_hex|None)."""
     h = hashlib.sha256()
+    extra = manifest.new_hasher(extra_algo) if extra_algo else None
     with open(path, "rb") as f:
         for blk in iter(lambda: f.read(READ_BLOCK), b""):
             h.update(blk)
-    return h.hexdigest()
+            if extra is not None:
+                extra.update(blk)
+    return h.hexdigest(), (extra.hexdigest() if extra is not None else None)
 
 
 class Downloader:
@@ -153,7 +159,7 @@ class Downloader:
             if os.path.exists(path):
                 local_size = os.path.getsize(path)
                 if size and local_size == size:
-                    if not expected_sha or _hash_file(path) == expected_sha:
+                    if not expected_sha or _hash_file(path)[0] == expected_sha:
                         db.add_download(sid, bucket, key, path, size)
                         db.update_download(db.list_downloads(sid, 1)[0]["id"],
                                            status="skipped", finished_at=db.now())
@@ -188,20 +194,43 @@ class Downloader:
             if size and actual != size:
                 raise AwsError(f"size mismatch: expected {size:,}, got {actual:,}")
 
-            sha = _hash_file(path)
+            # Also re-verify against the offload manifest hash (xxh64/…) recorded
+            # at upload, if any — computed in the same read pass as SHA-256. This
+            # is a true byte-level check that the restored copy matches what the
+            # DIT recorded at offload.
+            frow = db.get_file(bucket, key) if config.MANIFEST_CHECK else None
+            m_algo = (frow or {}).get("manifest_algo")
+            m_expected = (frow or {}).get("manifest_hash")
+            want = m_algo if m_expected else None
+
+            sha, m_computed = _hash_file(path, want)
             if expected_sha and sha != expected_sha:
                 raise AwsError(f"checksum mismatch: index {expected_sha[:16]}… "
                                f"vs downloaded {sha[:16]}…")
+
+            m_state = None
+            if m_expected:
+                if m_computed is None:
+                    m_state = "algo_unsupported"
+                elif manifest.normalize_hash(m_algo, m_computed) == m_expected:
+                    m_state = "ok"
+                else:
+                    m_state = "mismatch"
+                    log_event("ERROR", "download",
+                              f"MANIFEST MISMATCH on download: {path} — {m_algo} "
+                              f"manifest={m_expected} computed={manifest.normalize_hash(m_algo, m_computed)}")
+
             status = "verified" if expected_sha else "downloaded"
             db.update_download(did, status=status, sha256=sha,
                                download_seconds=round(elapsed, 3),
-                               finished_at=db.now())
+                               finished_at=db.now(), manifest_state=m_state)
             db.bump_dl_session(sid, done=1)
             log_event("INFO", "download",
                       f"{status}: {path} ({actual:,} bytes in {elapsed:.1f}s, "
                       f"{fmt_speed(actual / elapsed)}"
                       + (f", sha256 matches index" if expected_sha else
-                         ", no index checksum to verify against") + ")")
+                         ", no index checksum to verify against")
+                      + (f", manifest {m_state}" if m_state else "") + ")")
         except Exception as e:
             if did:
                 db.update_download(did, status="failed", error=str(e)[:1000],

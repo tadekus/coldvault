@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS downloads(
   error TEXT,
   sha256 TEXT,
   download_seconds REAL,
-  finished_at TEXT
+  finished_at TEXT,
+  manifest_state TEXT      -- ok | mismatch | algo_unsupported (vs offload manifest)
 );
 CREATE INDEX IF NOT EXISTS idx_downloads_key ON downloads(bucket, key);
 CREATE INDEX IF NOT EXISTS idx_downloads_session ON downloads(session_id);
@@ -138,6 +139,10 @@ def _migrate():
             if col not in cols:
                 print(f"[db] adding {col} column to files")
                 _conn.execute(f"ALTER TABLE files ADD COLUMN {col} {decl}")
+        dcols = [r[1] for r in _conn.execute("PRAGMA table_info(downloads)").fetchall()]
+        if dcols and "manifest_state" not in dcols:
+            print("[db] adding manifest_state column to downloads")
+            _conn.execute("ALTER TABLE downloads ADD COLUMN manifest_state TEXT")
         _conn.commit()
         return
     default = None

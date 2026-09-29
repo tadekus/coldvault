@@ -602,7 +602,7 @@ async function loadDownloads() {
       <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
       <td class="mono">${esc(f.local_path || "—")}</td>
       <td class="num">${fmtBytes(f.size)}</td>
-      <td>${chip(f.status)}</td>
+      <td>${chip(f.status)}${manifestBadge(f.manifest_state)}</td>
       <td class="num">${f.download_seconds && f.size ? fmtBytes(f.size / f.download_seconds) + "/s" : "—"}</td>
       <td class="mono">${esc(f.finished_at || "—")}</td>
     </tr>`).join("") || `<tr><td colspan="6" class="muted" style="padding:20px">nothing downloaded yet</td></tr>`;
