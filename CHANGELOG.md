@@ -4,6 +4,18 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.4.0
+
+- **Offload manifest cross-check.** If a source folder contains a checksum manifest CSV
+  from a DIT/offload tool (Silverstack, YoYotta, Pomfort, …), ColdVault matches each
+  uploaded file to it by name and verifies the manifest's hash (XXH64/MD5/SHA1/SHA256),
+  computed in the same read pass as the upload SHA-256 — an independent check that the
+  file on the drive matches what was recorded at offload. Results show as `csv✓` /
+  `csv✗` badges in the Index, are filterable (**manifest: mismatch/ok/not in manifest**),
+  and mismatches are logged as errors (category `manifest`). Toggle with
+  `COLDVAULT_MANIFEST_CHECK`; manifest extensions via `COLDVAULT_MANIFEST_EXTS`
+  (default `.csv`). Adds the `xxhash` dependency.
+
 ## 1.3.0
 
 - **Clear local index** (dashboard → Connection). Wipe index metadata for one bucket

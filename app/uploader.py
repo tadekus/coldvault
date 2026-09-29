@@ -12,6 +12,7 @@ from fnmatch import fnmatch
 import awsapi
 import config
 import db
+import manifest
 from awsapi import AwsError
 from logs import log_event
 
@@ -34,12 +35,19 @@ def fmt_speed(bps):
         bps /= 1024
 
 
-def _hash_file(path):
+def _hash_file(path, extra_algo=None):
+    """Compute the upload SHA-256 in one read pass, and optionally a second
+    digest (e.g. xxh64 for a manifest check) in the same pass. Returns
+    (sha_hex, sha_b64, extra_hex_or_None)."""
     h = hashlib.sha256()
+    extra = manifest.new_hasher(extra_algo) if extra_algo else None
     with open(path, "rb") as f:
         for blk in iter(lambda: f.read(READ_BLOCK), b""):
             h.update(blk)
-    return h.hexdigest(), base64.b64encode(h.digest()).decode()
+            if extra is not None:
+                extra.update(blk)
+    return (h.hexdigest(), base64.b64encode(h.digest()).decode(),
+            extra.hexdigest() if extra is not None else None)
 
 
 class Uploader:
@@ -171,8 +179,13 @@ class Uploader:
                   f"Session #{sid}: scanning done — {len(files)} files, "
                   f"{total_bytes:,} bytes under {root} -> s3://{bucket}")
 
+        # Checksum manifests (Silverstack/DIT offload CSVs) for the integrity check.
+        m_entries = {}
+        if config.MANIFEST_CHECK:
+            m_entries, _found = manifest.load_manifests(root, config.MANIFEST_EXTS)
+
         with ThreadPoolExecutor(max_workers=config.UPLOAD_WORKERS) as ex:
-            futures = [ex.submit(self._upload_one, sid, bucket, root, label, p, size, mtime)
+            futures = [ex.submit(self._upload_one, sid, bucket, root, label, p, size, mtime, m_entries)
                        for p, size, mtime in files]
             for f in futures:
                 f.result()
@@ -186,9 +199,14 @@ class Uploader:
 
     # ---- single file ----
 
-    def _upload_one(self, sid, bucket, root, label, path, size, mtime):
+    def _upload_one(self, sid, bucket, root, label, path, size, mtime, m_entries=None):
         rel = os.path.relpath(path, root).replace(os.sep, "/")
         key = make_key(label, rel)
+
+        # Manifest cross-check: is this file listed in an offload checksum manifest?
+        mentry = manifest.lookup(m_entries, path) if m_entries else None
+        want_algo = mentry[0] if mentry else None
+        m_state = m_algo = m_hash = None
         try:
             existing = db.get_file(bucket, key)
             if (existing and existing["status"] == "verified"
@@ -198,9 +216,27 @@ class Uploader:
                 log_event("DEBUG", "upload", f"skip (unchanged, already verified): s3://{bucket}/{key}")
                 return
 
-            sha_hex = sha_b64 = None
-            if config.DEDUPE or size <= config.MULTIPART_THRESHOLD:
-                sha_hex, sha_b64 = _hash_file(path)
+            sha_hex = sha_b64 = m_computed = None
+            if config.DEDUPE or size <= config.MULTIPART_THRESHOLD or want_algo:
+                sha_hex, sha_b64, m_computed = _hash_file(path, want_algo)
+
+                # Evaluate the manifest check now that we've read the file.
+                if mentry:
+                    algo, expected, msize = mentry
+                    m_algo, m_hash = algo, expected
+                    if m_computed is None:
+                        m_state = "algo_unsupported"
+                        log_event("WARNING", "manifest",
+                                  f"manifest hash '{algo}' not supported (install xxhash?): {rel}")
+                    elif manifest.normalize_hash(algo, m_computed) == expected:
+                        m_state = "ok"
+                    else:
+                        m_state = "mismatch"
+                        log_event("ERROR", "manifest",
+                                  f"MANIFEST MISMATCH: {rel} — {algo} manifest={expected} "
+                                  f"computed={manifest.normalize_hash(algo, m_computed)}")
+                elif m_entries:
+                    m_state = "not_in_manifest"
 
                 if (existing and existing["status"] == "verified"
                         and existing["sha256"] == sha_hex):
@@ -242,11 +278,13 @@ class Uploader:
             db.upsert_file(bucket, key, sha256=hex_sha, checksum_s3=remote or expected,
                            etag=etag, status="verified",
                            uploaded_at=db.now(), verified_at=db.now(),
-                           upload_seconds=round(elapsed, 3))
+                           upload_seconds=round(elapsed, 3),
+                           manifest_state=m_state, manifest_algo=m_algo, manifest_hash=m_hash)
             db.bump_session(sid, done=1, bytes_done=bytes_to_credit)
             log_event("INFO", "upload",
                       f"verified: s3://{bucket}/{key} ({size:,} bytes in {elapsed:.1f}s, "
-                      f"{fmt_speed(size / elapsed)}, sha256={hex_sha[:16]}…)")
+                      f"{fmt_speed(size / elapsed)}, sha256={hex_sha[:16]}…"
+                      + (f", manifest {m_state}" if m_state and m_state != "not_in_manifest" else "") + ")")
         except Exception as e:
             db.upsert_file(bucket, key, status="failed", error=str(e)[:1000])
             db.bump_session(sid, failed=1)

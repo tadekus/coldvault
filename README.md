@@ -34,6 +34,10 @@ everything it does.
   restores. Deep Archive restores objects, not folders — the index is how you find the
   exact objects you need. The Index defaults to **newest-first** so a fresh upload
   shows at the top; switch to **Name A–Z** with the sort dropdown.
+- **Offload manifest cross-check** — if a DIT/offload checksum manifest (Silverstack,
+  YoYotta, …) sits in the source folder, ColdVault verifies each file against its
+  recorded XXH64/MD5/SHA-256 hash during upload — catching corruption between offload
+  and archive.
 - **Integrity audit** — reconcile the index against the actual bucket contents on
   demand: flags objects the index thinks are archived but are missing from S3, size
   mismatches, and storage-class drift, and imports anything new. Paginated, so it
@@ -381,6 +385,27 @@ production. All matched objects are added to the selection (scoped to the bucket
 chosen in the bucket filter, or all buckets), anything the index doesn't contain is
 listed as *not found*, and one click on **Request restore** sends the batch
 (Standard or Bulk). The parse result is logged like everything else.
+
+## Offload manifest cross-check
+
+Camera offload tools (Silverstack, YoYotta, Pomfort, ShotPut, …) write a **checksum
+manifest** — a CSV listing every copied file with its hash — next to the media. If
+ColdVault finds such a CSV in a folder it's uploading, it uses it as an **independent
+integrity check**: each file is matched to the manifest by name, and the manifest's
+recorded hash (XXH64, MD5, SHA-1 or SHA-256) is recomputed **in the same read pass** as
+the upload SHA-256 and compared. This catches corruption that happened *between* the
+offload and the archive — something S3's own checksums can't see, because they only
+prove the bytes ColdVault read arrived intact.
+
+Results appear as badges in the **Index** — `csv✓` (matches the manifest), `csv✗`
+(mismatch) — and are filterable (**manifest: mismatch / ok / not in manifest**), so you
+can pull up every mismatch across a shoot in one click. Mismatches are logged as errors
+under the `manifest` category. Matching is by filename (and name-without-extension), so
+a manifest row named `B001_F001` still matches `B001_F001.cine`.
+
+Enabled by default (`COLDVAULT_MANIFEST_CHECK=true`); set the manifest file extensions
+with `COLDVAULT_MANIFEST_EXTS` (default `.csv`). Files not listed in any manifest, and
+uploads from folders without one, simply carry no badge.
 
 ## Integrity audit
 
