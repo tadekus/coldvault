@@ -102,6 +102,8 @@ def upload_report_html(session, audit):
         _row("Bucket now holds", f'{audit["in_bucket"]} objects · {_fmt_bytes(audit["bucket_bytes"])}'),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '
                       f'{audit["size_mismatch_count"]} size-mismatch · {audit["class_drift_count"]} class-drift'),
+        _row("Offload manifest", f'{audit.get("manifest_ok", 0)} verified · '
+                                 f'{audit.get("manifest_mismatch_count", 0)} mismatch'),
     ])
     issues = ""
     if not ok:
@@ -117,6 +119,9 @@ def upload_report_html(session, audit):
         if audit["class_drift_count"]:
             parts.append("<b>Wrong storage class:</b><br>" +
                          "<br>".join(f'{m["key"]} ({m["class"]})' for m in audit["class_drift"][:20]))
+        if audit.get("manifest_mismatch_count"):
+            parts.append("<b>Offload manifest mismatch (archived file ≠ offload hash):</b><br>" +
+                         "<br>".join(audit.get("manifest_mismatch", [])[:20]))
         issues = ('<div style="margin-top:16px;padding:12px;background:#2a1a17;border-radius:8px;'
                   'font-family:monospace;font-size:12px;color:#e8a;">' + "<br><br>".join(parts) + "</div>")
 
@@ -142,6 +147,8 @@ def audit_report_html(audit):
         _row("Imported this run", audit["imported"]),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '
                       f'{audit["size_mismatch_count"]} size-mismatch · {audit["class_drift_count"]} class-drift'),
+        _row("Offload manifest", f'{audit.get("manifest_ok", 0)} verified · '
+                                 f'{audit.get("manifest_mismatch_count", 0)} mismatch'),
     ])
     return f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:auto;color:#222;">

@@ -407,6 +407,12 @@ Enabled by default (`COLDVAULT_MANIFEST_CHECK=true`); set the manifest file exte
 with `COLDVAULT_MANIFEST_EXTS` (default `.csv`). Files not listed in any manifest, and
 uploads from folders without one, simply carry no badge.
 
+The **bucket audit** re-surfaces this: it reports how many objects are manifest-verified
+vs mismatched and flags any mismatch as an audit finding, so a bad file shows up in every
+audit and email report, not only when it was first uploaded. (Deep Archive objects can't
+be re-hashed without a restore, so the audit re-checks the result recorded at upload
+rather than re-reading the bytes.)
+
 ## Integrity audit
 
 Uploads are checksum-verified when they happen, but for cold storage it's worth
