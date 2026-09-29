@@ -4,6 +4,16 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.6.0
+
+- **Byte-level manifest re-verify on download.** When a restored object is downloaded,
+  its offload-manifest hash (XXH64/…) is recomputed in the same read pass as the
+  verification SHA-256 and compared to the value recorded at upload — a true check that
+  the restored bytes match what the DIT recorded at offload. Result shows as a `csv✓` /
+  `csv✗` badge in the Downloaded-files table and is logged (mismatch → error). Negligible
+  cost: no extra read pass, and XXH64 is far faster than the SHA-256 already computed.
+  Adds a `manifest_state` column to the downloads table.
+
 ## 1.5.0
 
 - **Audit re-surfaces the offload-manifest check.** The bucket audit now reports how
