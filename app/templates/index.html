@@ -95,6 +95,12 @@
       <option value="new">Newest first</option>
       <option value="key">Name A–Z</option>
     </select>
+    <select id="manifestFilter" title="offload manifest check">
+      <option value="">any manifest</option>
+      <option value="mismatch">manifest: mismatch</option>
+      <option value="ok">manifest: ok</option>
+      <option value="not_in_manifest">not in manifest</option>
+    </select>
     <button id="btnSearch">Search</button>
   </div>
   <div class="row toolbar">
@@ -230,7 +236,7 @@
     <select id="logCategory">
       <option value="">all categories</option>
       <option>upload</option><option>download</option><option>watcher</option>
-      <option>restore</option><option>audit</option><option>editlist</option>
+      <option>restore</option><option>audit</option><option>manifest</option><option>editlist</option>
       <option>aws</option><option>app</option>
     </select>
     <input id="logSearch" placeholder="filter…" style="flex:1">

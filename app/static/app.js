@@ -26,6 +26,14 @@ function fmtBytes(n) {
 
 const chip = s => s ? `<span class="chip ${esc(s)}">${esc(s)}</span>` : "—";
 
+// Manifest (offload checksum) badge — only shown when it says something useful.
+function manifestBadge(state) {
+  if (state === "ok") return ` <span class="chip verified" title="matches offload checksum manifest">csv✓</span>`;
+  if (state === "mismatch") return ` <span class="chip failed" title="hash does NOT match the offload manifest">csv✗</span>`;
+  if (state === "algo_unsupported") return ` <span class="chip WARNING" title="manifest hash algorithm unsupported">csv?</span>`;
+  return "";  // not_in_manifest / none -> no badge
+}
+
 /* ---------- tabs ---------- */
 const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
                   restores: loadRestores, downloads: loadDownloads, notify: loadNotify,
@@ -371,6 +379,7 @@ async function loadFiles() {
   const q = new URLSearchParams({
     q: $("#search").value, status: $("#statusFilter").value,
     bucket: $("#bucketFilter").value || "", sort: $("#sortBy").value,
+    manifest: $("#manifestFilter").value,
     limit: PAGE_SIZE, offset: page * PAGE_SIZE,
   });
   const r = await api("/api/files?" + q);
@@ -390,7 +399,7 @@ async function loadFiles() {
       <td class="mono">${esc(f.bucket)}</td>
       <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
       <td class="num">${fmtBytes(f.size)}</td>
-      <td>${chip(f.status)}${f.audit_state && f.audit_state !== "ok" ? " " + chip(f.audit_state) : ""}</td>
+      <td>${chip(f.status)}${f.audit_state && f.audit_state !== "ok" ? " " + chip(f.audit_state) : ""}${manifestBadge(f.manifest_state)}</td>
       <td>${rst}</td>
       <td class="mono">${esc(f.uploaded_at || "—")}</td>
       <td class="num" title="${f.upload_seconds ? `uploaded in ${f.upload_seconds}s` : ""}">${f.upload_seconds ? fmtBytes(f.size / f.upload_seconds) + "/s" : "—"}</td>
@@ -409,6 +418,7 @@ $("#search").addEventListener("keydown", e => { if (e.key === "Enter") { page = 
 $("#statusFilter").onchange = () => { page = 0; loadFiles(); };
 $("#bucketFilter").onchange = () => { page = 0; loadFiles(); };
 $("#sortBy").onchange = () => { page = 0; loadFiles(); };
+$("#manifestFilter").onchange = () => { page = 0; loadFiles(); };
 $("#prevPage").onclick = () => { page = Math.max(0, page - 1); loadFiles(); };
 $("#nextPage").onclick = () => { page++; loadFiles(); };
 $("#selAll").onchange = e => {

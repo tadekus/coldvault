@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS files(
   upload_seconds REAL,
   audit_state TEXT,        -- ok | missing | size_mismatch | class_drift (last audit)
   audited_at TEXT,
+  manifest_state TEXT,     -- ok | mismatch | not_in_manifest | algo_unsupported
+  manifest_algo TEXT,
+  manifest_hash TEXT,
   UNIQUE(bucket, key)
 );
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
@@ -128,7 +131,10 @@ def _migrate():
     if "bucket" in cols:
         for col, decl in (("upload_seconds", "REAL"),
                           ("audit_state", "TEXT"),
-                          ("audited_at", "TEXT")):
+                          ("audited_at", "TEXT"),
+                          ("manifest_state", "TEXT"),
+                          ("manifest_algo", "TEXT"),
+                          ("manifest_hash", "TEXT")):
             if col not in cols:
                 print(f"[db] adding {col} column to files")
                 _conn.execute(f"ALTER TABLE files ADD COLUMN {col} {decl}")
@@ -300,7 +306,7 @@ def find_duplicate(bucket, sha256, size, exclude_key):
 
 
 def search_files(bucket=None, q=None, status=None, session_id=None, sort="new",
-                 limit=100, offset=0):
+                 manifest=None, limit=100, offset=0):
     where, params = "WHERE 1=1", []
     if bucket:
         where += " AND bucket = ?"
@@ -312,6 +318,9 @@ def search_files(bucket=None, q=None, status=None, session_id=None, sort="new",
     if status:
         where += " AND status = ?"
         params.append(status)
+    if manifest:
+        where += " AND manifest_state = ?"
+        params.append(manifest)
     if session_id:
         where += " AND session_id = ?"
         params.append(session_id)

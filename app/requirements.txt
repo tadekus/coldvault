@@ -1,3 +1,4 @@
 flask>=3.0
 pyaaf2>=1.7
+xxhash>=3.0
 

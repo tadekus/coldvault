@@ -239,6 +239,7 @@ def api_files():
         status=request.args.get("status") or None,
         session_id=request.args.get("session_id") or None,
         sort=request.args.get("sort") or "new",
+        manifest=request.args.get("manifest") or None,
         limit=request.args.get("limit", 100),
         offset=request.args.get("offset", 0),
     )

@@ -61,6 +61,12 @@ WATCH_INTERVAL = max(2, env_int("COLDVAULT_WATCH_INTERVAL", 10))
 
 UPLOAD_WORKERS = max(1, env_int("COLDVAULT_UPLOAD_WORKERS", 2))
 DEDUPE = env_bool("COLDVAULT_DEDUPE", True)
+# Cross-check uploaded files against offload/DIT checksum manifests (Silverstack,
+# YoYotta, …) found in the source folder. Matches by filename, compares the
+# manifest's hash (xxh64/md5/sha1/sha256) computed alongside the upload SHA-256.
+MANIFEST_CHECK = env_bool("COLDVAULT_MANIFEST_CHECK", True)
+MANIFEST_EXTS = tuple(("." + e.lstrip(".").lower())
+                      for e in _csv("COLDVAULT_MANIFEST_EXTS", ".csv"))
 MULTIPART_THRESHOLD = env_int("COLDVAULT_MULTIPART_THRESHOLD_MB", 512) * 1024 * 1024
 PART_SIZE = max(5, env_int("COLDVAULT_PART_SIZE_MB", 256)) * 1024 * 1024
 PART_WORKERS = max(1, env_int("COLDVAULT_PART_WORKERS", 4))
