@@ -378,6 +378,26 @@ def manifest_mismatch_keys(bucket, limit=200):
         "ORDER BY key LIMIT ?", (bucket, limit))]
 
 
+def audit_issue_counts(bucket):
+    return {r["audit_state"]: r["c"] for r in _rows(
+        "SELECT audit_state, COUNT(*) c FROM files WHERE bucket=? AND "
+        "audit_state IN ('missing','size_mismatch','class_drift') GROUP BY audit_state",
+        (bucket,))}
+
+
+def restore_summary():
+    r = _row("SELECT SUM(status='in_progress') ip, SUM(status='completed') done, "
+             "SUM(status='failed') failed, MAX(last_checked) lc FROM restores")
+    return {"in_progress": r["ip"] or 0, "completed": r["done"] or 0,
+            "failed": r["failed"] or 0, "last_checked": r["lc"]}
+
+
+def latest_finished_session(bucket):
+    return _row("SELECT * FROM sessions WHERE bucket=? AND "
+                "status IN ('done','done_with_errors','failed') ORDER BY id DESC LIMIT 1",
+                (bucket,))
+
+
 def distinct_buckets():
     return [r["bucket"] for r in _rows(
         "SELECT DISTINCT bucket FROM files ORDER BY bucket")]

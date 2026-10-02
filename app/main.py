@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 
 from flask import Flask, jsonify, render_template, request
 
@@ -18,6 +19,7 @@ from awsapi import AwsError
 from logs import log_event
 
 app = Flask(__name__)
+START_TIME = time.time()
 up = uploader_mod.Uploader()
 watch = watcher_mod.Watcher(up)
 down = downloader_mod.Downloader()
@@ -60,6 +62,101 @@ def _allowed_path(path):
 @app.get("/")
 def index():
     return render_template("index.html", version=version.VERSION)
+
+
+@app.get("/health")
+def api_health():
+    """Monitoring endpoint: upload/restore/download status + integrity signals.
+    Reads only local DB + in-memory state (no AWS calls) unless ?check_aws=1.
+    ?strict=1 returns HTTP 503 when status is 'attention'."""
+    bucket = config.BUCKET
+    fstats = db.stats(bucket).get("files", {})
+
+    def fcount(s):
+        return fstats.get(s, {}).get("count", 0)
+
+    # --- uploads ---
+    cur_sid = up.current_session
+    active = None
+    if cur_sid:
+        s = db.get_session(cur_sid)
+        if s:
+            pct = (round(100 * s["done_bytes"] / s["total_bytes"]) if s["total_bytes"]
+                   else (100 if s["status"] == "done" else 0))
+            active = {
+                "session_id": s["id"], "label": s["label"], "trigger": s["trigger"],
+                "status": s["status"],
+                "files_done": s["done_files"], "files_total": s["total_files"],
+                "skipped": s["skipped_files"], "failed": s["failed_files"],
+                "bytes_done": s["done_bytes"], "bytes_total": s["total_bytes"],
+                "percent": pct, "started_at": s["started_at"],
+            }
+    last = db.latest_finished_session(bucket)
+    last_session = None
+    if last:
+        last_session = {
+            "session_id": last["id"], "label": last["label"], "trigger": last["trigger"],
+            "status": last["status"], "files_total": last["total_files"],
+            "uploaded": last["done_files"], "skipped": last["skipped_files"],
+            "failed": last["failed_files"], "finished_at": last["finished_at"],
+        }
+    uploads = {
+        "running": cur_sid is not None,
+        "current_session": cur_sid,
+        "queued": up.queue_size(),
+        "active": active,
+        "last_session": last_session,
+    }
+
+    # --- restores / downloads ---
+    rsum = db.restore_summary()
+    restores = {"in_progress": rsum["in_progress"], "completed": rsum["completed"],
+                "failed": rsum["failed"], "last_checked": rsum["last_checked"]}
+    downloads = {"running": down.current_session is not None,
+                 "current_session": down.current_session, "queued": down.queue_size()}
+
+    # --- integrity signals (active bucket) ---
+    asum = db.audit_issue_counts(bucket)
+    msum = db.manifest_summary(bucket)
+    integrity = {
+        "failed_uploads": fcount("failed"),
+        "manifest_mismatch": msum.get("mismatch", 0),
+        "audit_missing": asum.get("missing", 0),
+        "audit_size_mismatch": asum.get("size_mismatch", 0),
+        "audit_class_drift": asum.get("class_drift", 0),
+    }
+
+    body = {
+        "status": "ok",
+        "version": version.VERSION,
+        "time": db.now(),
+        "uptime_seconds": int(time.time() - START_TIME),
+        "bucket": bucket,
+        "objects": {"verified": fcount("verified"), "remote": fcount("remote"),
+                    "failed": fcount("failed")},
+        "uploads": uploads,
+        "restores": restores,
+        "downloads": downloads,
+        "integrity": integrity,
+    }
+
+    if request.args.get("check_aws"):
+        try:
+            awsapi.aws("sts", "get-caller-identity", log=False)
+            awsapi.s3api("head-bucket", "--bucket", bucket, log=False)
+            body["aws"] = {"ok": True}
+        except AwsError as e:
+            body["aws"] = {"ok": False, "error": str(e)[:200]}
+
+    issues = (integrity["failed_uploads"] + integrity["manifest_mismatch"]
+              + integrity["audit_missing"] + integrity["audit_size_mismatch"]
+              + integrity["audit_class_drift"] + restores["failed"]
+              + (0 if body.get("aws", {}).get("ok", True) else 1))
+    busy = uploads["running"] or uploads["queued"] > 0 or downloads["running"]
+    body["status"] = "attention" if issues else ("busy" if busy else "ok")
+
+    code = 503 if (request.args.get("strict") and body["status"] == "attention") else 200
+    return jsonify(body), code
 
 
 @app.get("/api/status")

@@ -4,6 +4,14 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.7.0
+
+- **`/health` monitoring endpoint.** Reports upload / restore / download status plus
+  integrity signals (failed uploads, manifest mismatches, audit issues) as JSON. Reads
+  only the local DB + in-memory state — no AWS calls — so it's cheap to poll. `status`
+  is `ok` / `busy` / `attention`; `?strict=1` returns HTTP 503 on `attention` for uptime
+  monitors; `?check_aws=1` adds a live AWS-connectivity check.
+
 ## 1.6.0
 
 - **Byte-level manifest re-verify on download.** When a restored object is downloaded,
