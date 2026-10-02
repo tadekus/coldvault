@@ -463,6 +463,33 @@ on demand** (runs an audit now and mails it) and **Send a test email** to verify
 setup. The sender address must be on a domain verified in your Resend account (or use
 `onboarding@resend.dev` for a quick test).
 
+## Health / monitoring endpoint
+
+`GET /health` returns a JSON snapshot of upload, restore and download activity plus
+integrity signals, for uptime monitors and dashboards. It reads only the local index
+and in-memory state — **no AWS calls** — so it's safe to poll frequently.
+
+```bash
+curl -s http://localhost:9999/health | jq
+```
+
+Top-level `status` is **`ok`** (idle, healthy), **`busy`** (an upload/download is running
+or queued), or **`attention`** (failed uploads, manifest mismatches, or audit issues
+need looking at). Options:
+
+- `?strict=1` — return HTTP **503** when `status` is `attention` (so a monitor alerts),
+  otherwise **200**.
+- `?check_aws=1` — also run a live `sts get-caller-identity` + `head-bucket` and add an
+  `aws` block (off by default, since it costs a round-trip).
+
+Body fields: `version`, `time`, `uptime_seconds`, `bucket`; `objects` (verified / remote
+/ failed counts); `uploads` (`running`, `current_session`, `queued`, `active` progress
+with `files_done/total`, `bytes_done/total`, `percent`, and `last_session` summary);
+`restores` (`in_progress`, `completed`, `failed`, `last_checked`); `downloads` (`running`,
+`current_session`, `queued`); and `integrity` (`failed_uploads`, `manifest_mismatch`,
+`audit_missing`, `audit_size_mismatch`, `audit_class_drift`). Integrity counts are for
+the active bucket.
+
 ## Performance tuning
 
 A single S3 PUT stream tops out around 20–40 MB/s. ColdVault parallelizes at two
