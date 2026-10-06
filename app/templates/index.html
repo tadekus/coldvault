@@ -99,6 +99,7 @@
       <option value="">any manifest</option>
       <option value="mismatch">manifest: mismatch</option>
       <option value="ok">manifest: ok</option>
+      <option value="listed">manifest: listed (hash attached)</option>
       <option value="not_in_manifest">not in manifest</option>
     </select>
     <button id="btnSearch">Search</button>
@@ -109,6 +110,26 @@
     <span id="editSummary" class="muted"></span>
   </div>
   <div id="editResults" class="box" style="display:none"></div>
+
+  <div class="box">
+    <h3>Verify against offload manifest</h3>
+    <div id="mfDrop" class="dropzone">
+      <b>Drop manifest file(s) here</b> — Silverstack/YoYotta <code>.csv</code> or ASC <code>.mhl</code>
+      <div class="muted" style="font-size:12px">or <a href="#" id="mfPick">choose files</a></div>
+      <input type="file" id="mfFiles" accept=".csv,.mhl" multiple style="display:none">
+    </div>
+    <div class="row">
+      <span class="muted">or scan a server folder:</span>
+      <input id="mfFolder" placeholder="/media/SSD15 — finds every .csv/.mhl inside" style="flex:2">
+      <button id="btnMfScan" class="secondary">Scan folder</button>
+    </div>
+    <div class="row">
+      <input id="mfScope" placeholder="limit to keys containing (optional), e.g. SD01_20261005_MON" style="flex:2">
+      <label><input type="checkbox" id="mfDeep"> deep verify — re-hash source files still on a mounted drive</label>
+    </div>
+    <div id="mfResult" class="muted"></div>
+    <div id="mfJobs" class="muted" style="margin-top:6px"></div>
+  </div>
   <div class="row toolbar restorebar">
     <span id="selCount" class="muted">0 selected</span>
     <select id="restoreTier">

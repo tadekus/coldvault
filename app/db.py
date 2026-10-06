@@ -378,6 +378,32 @@ def manifest_mismatch_keys(bucket, limit=200):
         "ORDER BY key LIMIT ?", (bucket, limit))]
 
 
+def files_by_basename(bucket, name, scope=None, limit=50):
+    """Full index rows whose filename (last key segment) equals name
+    (case-insensitive). bucket=None searches all buckets; scope optionally
+    restricts to keys containing that substring (e.g. a shoot folder)."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    where = "WHERE (key LIKE ? ESCAPE '\\' OR key = ? COLLATE NOCASE)"
+    params = [f"%/{esc(name)}", name]
+    if bucket:
+        where += " AND bucket = ?"
+        params.append(bucket)
+    if scope:
+        where += " AND key LIKE ? ESCAPE '\\'"
+        params.append(f"%{esc(scope)}%")
+    return _rows(f"SELECT * FROM files {where} LIMIT ?", params + [limit])
+
+
+def set_manifest(file_id, state, algo, mhash):
+    _exec("UPDATE files SET manifest_state=?, manifest_algo=?, manifest_hash=? WHERE id=?",
+          (state, algo, mhash, file_id))
+
+
+def get_file_by_id(file_id):
+    return _row("SELECT * FROM files WHERE id=?", (file_id,))
+
+
 def audit_issue_counts(bucket):
     return {r["audit_state"]: r["c"] for r in _rows(
         "SELECT audit_state, COUNT(*) c FROM files WHERE bucket=? AND "

@@ -388,12 +388,13 @@ listed as *not found*, and one click on **Request restore** sends the batch
 
 ## Offload manifest cross-check
 
-Camera offload tools (Silverstack, YoYotta, Pomfort, ShotPut, …) write a **checksum
-manifest** — a CSV listing every copied file with its hash — next to the media. If
-ColdVault finds such a CSV in a folder it's uploading, it uses it as an **independent
-integrity check**: each file is matched to the manifest by name, and the manifest's
-recorded hash (XXH64, MD5, SHA-1 or SHA-256) is recomputed **in the same read pass** as
-the upload SHA-256 and compared. This catches corruption that happened *between* the
+Camera offload tools (Silverstack, YoYotta, Pomfort, ShotPut, …) write **checksum
+manifests** next to the media: a Silverstack-style **CSV**, and/or **ASC MHL** files
+(`ascmhl/*.mhl`, one per card — the industry standard, covering every file including
+sound). If ColdVault finds any of these anywhere in a folder it's uploading, it uses them
+as an **independent integrity check**: each file is matched to the manifest by name, and
+the manifest's recorded hash (XXH64, XXH3, MD5, SHA-1 or SHA-256) is recomputed **in the
+same read pass** as the upload SHA-256 and compared. This catches corruption that happened *between* the
 offload and the archive — something S3's own checksums can't see, because they only
 prove the bytes ColdVault read arrived intact.
 
@@ -404,8 +405,34 @@ under the `manifest` category. Matching is by filename (and name-without-extensi
 a manifest row named `B001_F001` still matches `B001_F001.cine`.
 
 Enabled by default (`COLDVAULT_MANIFEST_CHECK=true`); set the manifest file extensions
-with `COLDVAULT_MANIFEST_EXTS` (default `.csv`). Files not listed in any manifest, and
-uploads from folders without one, simply carry no badge.
+with `COLDVAULT_MANIFEST_EXTS` (default `.csv,.mhl`). Manifests can sit anywhere in the
+uploaded tree — the scan is recursive. Files not listed in any manifest, and uploads from
+folders without one, simply carry no badge. Every upload logs a one-line summary
+(`manifest check: N ok, M mismatch, …`, or that no manifest was found), and on startup
+ColdVault logs whether the `xxhash` library is installed — XXH64/XXH3 checks need it, and
+`/health` reports it under `manifest_check`.
+
+### Verifying against a manifest later
+
+Already archived something without a manifest check (or got the manifest afterwards)?
+The **Index** tab's **Verify against offload manifest** box handles it:
+
+- **Drag & drop** one or more `.csv` / `.mhl` files from your computer, **or**
+- **Scan a server folder** (e.g. `/media/SSD15` while the drive is still mounted) to pick
+  up every manifest inside it at once.
+
+Each listed file is cross-checked against the archive — **present** (name and size match),
+**size mismatch**, or **not archived** — and the manifest hash is **attached** to the
+archived object (`csv·` badge), so restoring + downloading it later re-verifies the bytes.
+Use the optional **scope** field (e.g. `SD01_20261005_MON`) when the same filename exists
+in several shoots.
+
+Tick **deep verify** to go further while the source drive is still mounted: ColdVault
+re-reads each source file in the background, computing SHA-256 and the manifest hash in one
+pass. If the SHA-256 equals the archived object's, the local bytes *are* the archived bytes,
+so the manifest comparison is a true byte-level verification of the archive — without
+restoring anything from Deep Archive. Results become `csv✓` / `csv✗`; files whose source
+changed or is no longer mounted are reported, not guessed.
 
 The **bucket audit** re-surfaces this: it reports how many objects are manifest-verified
 vs mismatched and flags any mismatch as an audit finding, so a bad file shows up in every

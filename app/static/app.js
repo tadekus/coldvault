@@ -31,6 +31,7 @@ function manifestBadge(state) {
   if (state === "ok") return ` <span class="chip verified" title="matches offload checksum manifest">csv✓</span>`;
   if (state === "mismatch") return ` <span class="chip failed" title="hash does NOT match the offload manifest">csv✗</span>`;
   if (state === "algo_unsupported") return ` <span class="chip WARNING" title="manifest hash algorithm unsupported">csv?</span>`;
+  if (state === "listed") return ` <span class="chip remote" title="in the offload manifest (name+size match); bytes not yet re-hashed — verified on download or by deep verify">csv·</span>`;
   return "";  // not_in_manifest / none -> no badge
 }
 
@@ -484,6 +485,90 @@ $("#btnEditList").onclick = async () => {
     $("#editSummary").textContent = "✘ " + e.message;
   }
 };
+
+/* ---------- verify against offload manifest ---------- */
+function renderManifestReport(r) {
+  const bad = r.size_mismatch + r.mismatch;
+  let h = bad
+    ? `<span style="color:var(--err)">⚠ ${bad} problem(s)</span> — `
+    : (r.missing ? `<span style="color:var(--warn)">⚠ ${r.missing} not archived</span> — `
+                 : `<span style="color:var(--ok)">✔ all manifest files are archived</span> — `);
+  h += `${r.total} file(s) in ${r.sources.length} manifest(s): ` +
+       `<b>${r.verified}</b> byte-verified, <b>${r.present}</b> present (name+size ok, hash attached), ` +
+       `${r.size_mismatch} size mismatch, ${r.mismatch} hash mismatch, ${r.missing} not archived`;
+  if (r.ambiguous) h += `, ${r.ambiguous} ambiguous name(s) — narrow with the scope field`;
+  const list = (title, arr, fmt) => arr && arr.length
+    ? `<div style="margin-top:6px"><b>${title}</b><div class="mono" style="font-size:11px">${arr.slice(0, 30).map(fmt).join("<br>")}${arr.length > 30 ? "<br>…" : ""}</div></div>` : "";
+  h += list("Not archived:", r.missing_list, x => esc(x));
+  h += list("Size mismatch:", r.size_mismatch_list, x => `${esc(x.key)} (manifest ${x.manifest}, archived ${x.archived})`);
+  h += list("Hash mismatch:", r.mismatch_list, x => esc(x.key || x.name));
+  if (!r.xxhash) h += `<div style="color:var(--err);margin-top:6px">⚠ xxhash is not installed on the server — XXH64 checks can't run. Rebuild the image.</div>`;
+  h += `<div style="margin-top:6px">Present files now carry the manifest hash: restoring + downloading them re-verifies the bytes${r.job_id ? `; deep verify #${r.job_id} is running below` : ""}.</div>`;
+  $("#mfResult").innerHTML = h;
+  if (r.job_id) pollManifestJobs();
+  if (activeTab === "files") loadFiles();
+}
+
+async function submitManifest(fd) {
+  fd.append("bucket", $("#bucketFilter").value || "");
+  fd.append("scope", $("#mfScope").value.trim());
+  if ($("#mfDeep").checked) fd.append("deep", "1");
+  $("#mfResult").textContent = "verifying…";
+  try {
+    const resp = await fetch("/api/manifest/verify", { method: "POST", body: fd });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    renderManifestReport(data);
+  } catch (e) {
+    $("#mfResult").textContent = "✘ " + e.message;
+  }
+}
+
+function sendManifestFiles(files) {
+  const list = [...files].filter(f => /\.(csv|mhl)$/i.test(f.name));
+  if (!list.length) { $("#mfResult").textContent = "✘ drop .csv or .mhl manifest files"; return; }
+  const fd = new FormData();
+  list.forEach(f => fd.append("file", f));
+  submitManifest(fd);
+}
+
+(() => {
+  const dz = $("#mfDrop");
+  ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add("over");
+  }));
+  ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove("over");
+  }));
+  dz.addEventListener("drop", e => sendManifestFiles(e.dataTransfer.files));
+  $("#mfPick").onclick = e => { e.preventDefault(); $("#mfFiles").click(); };
+  $("#mfFiles").onchange = e => { sendManifestFiles(e.target.files); e.target.value = ""; };
+  $("#btnMfScan").onclick = () => {
+    const folder = $("#mfFolder").value.trim();
+    if (!folder) return alert("Enter a server folder, e.g. /media/SSD15");
+    const fd = new FormData();
+    fd.append("folder", folder);
+    submitManifest(fd);
+  };
+})();
+
+let mfPollTimer = null;
+async function pollManifestJobs() {
+  clearTimeout(mfPollTimer);
+  try {
+    const jobs = await api("/api/manifest/jobs");
+    $("#mfJobs").innerHTML = jobs.slice(0, 3).map(j => {
+      const pct = j.total ? Math.round(100 * j.done / j.total) : 100;
+      return `<div>Deep verify #${j.id} — ${esc(j.status)} ${j.done}/${j.total} (${pct}%) · ` +
+        `<span style="color:var(--ok)">${j.ok} ok</span>, ` +
+        `<span style="color:var(--err)">${j.mismatch} mismatch</span>, ` +
+        `${j.changed} local changed, ${j.no_local} source unavailable` +
+        (j.unsupported ? `, ${j.unsupported} unsupported` : "") + `</div>`;
+    }).join("");
+    if (jobs.some(j => j.status === "running")) mfPollTimer = setTimeout(pollManifestJobs, 3000);
+    else if (activeTab === "files") loadFiles();
+  } catch (e) { /* ignore transient poll errors */ }
+}
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
