@@ -48,6 +48,10 @@ def _candidates(rec, bucket, scope):
         rows = db.files_by_basename(bucket, n, scope)
         if rows:
             return rows
+    # Manifest lists a bare clip name with no extension (Silverstack exports
+    # without a Resources column): match the archived file by its stem.
+    if not os.path.splitext(rec["name"])[1]:
+        return db.files_by_stem(bucket, rec["name"], scope)
     return []
 
 
