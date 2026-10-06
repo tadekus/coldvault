@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -393,6 +394,27 @@ def files_by_basename(bucket, name, scope=None, limit=50):
         where += " AND key LIKE ? ESCAPE '\\'"
         params.append(f"%{esc(scope)}%")
     return _rows(f"SELECT * FROM files {where} LIMIT ?", params + [limit])
+
+
+def files_by_stem(bucket, stem, scope=None, limit=50):
+    """Index rows whose filename WITHOUT extension equals stem — for manifests
+    that list bare clip names (e.g. Silverstack 'A_0002C003_…_h1DPN' for the
+    archived '…_h1DPN.mxf', or '4-10T01' for '4-10T01.wav')."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    where = "WHERE (key LIKE ? ESCAPE '\\' OR key LIKE ? ESCAPE '\\')"
+    params = [f"%/{esc(stem)}.%", f"{esc(stem)}.%"]
+    if bucket:
+        where += " AND bucket = ?"
+        params.append(bucket)
+    if scope:
+        where += " AND key LIKE ? ESCAPE '\\'"
+        params.append(f"%{esc(scope)}%")
+    rows = _rows(f"SELECT * FROM files {where} LIMIT ?", params + [limit])
+    s = stem.lower()
+    # LIKE '%/stem.%' would also accept 'stem.foo.wav'; keep exact stem matches only
+    return [r for r in rows
+            if os.path.splitext(r["key"].rsplit("/", 1)[-1])[0].lower() == s]
 
 
 def set_manifest(file_id, state, algo, mhash):

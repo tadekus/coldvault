@@ -4,6 +4,14 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.8.1
+
+- Fix verify-later reporting most files as "not archived" for Silverstack exports
+  without a `Resources` column, whose `Name` is the bare clip name with no extension
+  (`A_0002C003_…_h1DPN` for the archived `…_h1DPN.mxf`, `4-10T01` for `4-10T01.wav`).
+  Such names now match archived files by filename stem. (Upload-time matching was
+  already stem-aware and unaffected.)
+
 ## 1.8.0
 
 - **ASC MHL support.** `.mhl` checksum manifests (ASC MHL v2 and older v1.x, as
