@@ -78,6 +78,12 @@ button { cursor: pointer; background: var(--accent-dim); color: var(--accent); b
 button:hover { filter: brightness(1.2); }
 button.secondary { background: var(--panel2); color: var(--text); border-color: var(--border); }
 button.danger { background: #3a1f1c; color: var(--err); border-color: #5a2a24; }
+.dropzone {
+  border: 2px dashed var(--border); border-radius: 10px; padding: 18px;
+  text-align: center; margin-bottom: 8px; transition: border-color .15s, background .15s;
+}
+.dropzone.over { border-color: var(--accent); background: var(--accent-dim); }
+.dropzone a { color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
 
 .browse { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

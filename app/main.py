@@ -11,6 +11,8 @@ import db
 import downloader as downloader_mod
 import notify
 import editlist
+import manifest
+import manifest_verify
 import restore
 import uploader as uploader_mod
 import version
@@ -138,6 +140,9 @@ def api_health():
         "restores": restores,
         "downloads": downloads,
         "integrity": integrity,
+        "manifest_check": {"enabled": config.MANIFEST_CHECK,
+                           "formats": list(config.MANIFEST_EXTS),
+                           "xxhash": manifest.xxhash_available()},
     }
 
     if request.args.get("check_aws"):
@@ -386,6 +391,59 @@ def api_editlist():
                     "matched": matched, "unmatched": unmatched})
 
 
+@app.post("/api/manifest/verify")
+def api_manifest_verify():
+    """Verify offload manifest(s) against what's already archived.
+    Input: one or more uploaded files (CSV/MHL) under 'file', OR a server
+    'folder' to scan for manifests. Options: bucket ('*' = all), scope (key
+    substring filter), deep=1 to re-hash still-mounted source files."""
+    bucket = (request.form.get("bucket") or "").strip() or config.BUCKET
+    if bucket == "*":
+        bucket = None
+    scope = (request.form.get("scope") or "").strip() or None
+    deep = request.form.get("deep") in ("1", "true", "on")
+    folder = (request.form.get("folder") or "").strip()
+
+    records, sources = [], []
+    if folder:
+        if not _allowed_path(folder) or not os.path.isdir(folder):
+            return jsonify({"error": f"folder must be inside: {', '.join(config.BROWSE_ROOTS)}"}), 400
+        records, found = manifest.load_manifest_records(folder, config.MANIFEST_EXTS)
+        sources = [os.path.relpath(p, folder) for p in found]
+    else:
+        for up_file in request.files.getlist("file"):
+            if not up_file or not up_file.filename:
+                continue
+            fd, tmp = tempfile.mkstemp(dir=config.TMP_DIR, suffix=".manifest")
+            os.close(fd)
+            try:
+                up_file.save(tmp)
+                recs, _fmt = manifest.parse_any(tmp, up_file.filename)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            if recs:
+                records.extend(recs)
+                sources.append(up_file.filename)
+    if not records:
+        return jsonify({"error": "no file hashes found — is this a CSV/MHL checksum manifest?"}), 400
+
+    rep = manifest_verify.verify(records, bucket, scope)
+    deep_items = rep.pop("_deep")
+    rep["sources"] = sources
+    rep["xxhash"] = manifest.xxhash_available()
+    if deep and deep_items:
+        rep["job_id"] = manifest_verify.start_deep(deep_items, ", ".join(sources[:3]))
+    return jsonify(rep)
+
+
+@app.get("/api/manifest/jobs")
+def api_manifest_jobs():
+    return jsonify(manifest_verify.jobs())
+
+
 @app.get("/api/sessions")
 def api_sessions():
     return jsonify(db.list_sessions())
@@ -619,6 +677,15 @@ if __name__ == "__main__":
     watch.start()
     restore.start_poller()
     log_event("INFO", "app",
-              f"ColdVault started — bucket={config.BUCKET or '(not set!)'}, "
+              f"ColdVault {version.VERSION} started — bucket={config.BUCKET or '(not set!)'}, "
               f"storage_class={config.STORAGE_CLASS}, port={config.PORT}")
+    if config.MANIFEST_CHECK:
+        if manifest.xxhash_available():
+            log_event("INFO", "manifest",
+                      f"manifest check enabled ({', '.join(config.MANIFEST_EXTS)}), xxhash available")
+        else:
+            log_event("ERROR", "manifest",
+                      "manifest check enabled but the xxhash library is NOT installed — "
+                      "XXH64/XXH3 manifests cannot be verified. Rebuild the image: "
+                      "docker compose build --no-cache coldvault && docker compose up -d")
     app.run(host="0.0.0.0", port=config.PORT, threaded=True)

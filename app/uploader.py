@@ -70,6 +70,8 @@ class Uploader:
         self.q = queue.Queue()
         self.current_session = None
         self._selections = {}   # sid -> explicit list of selected paths
+        self._mstats = {}       # sid -> {manifest_state: count}
+        self._mlock = threading.Lock()
         # Optional callback(sid, trigger) run after a session finishes; set by main.
         self.on_session_done = None
         threading.Thread(target=self._loop, daemon=True, name="uploader").start()
@@ -179,10 +181,15 @@ class Uploader:
                   f"Session #{sid}: scanning done — {len(files)} files, "
                   f"{total_bytes:,} bytes under {root} -> s3://{bucket}")
 
-        # Checksum manifests (Silverstack/DIT offload CSVs) for the integrity check.
-        m_entries = {}
+        # Checksum manifests (CSV / ASC MHL from the DIT offload) for the integrity check.
+        m_entries, m_found = {}, []
         if config.MANIFEST_CHECK:
-            m_entries, _found = manifest.load_manifests(root, config.MANIFEST_EXTS)
+            m_entries, m_found = manifest.load_manifests(root, config.MANIFEST_EXTS)
+            if not m_found:
+                log_event("INFO", "manifest",
+                          f"Session #{sid}: no checksum manifest (.csv/.mhl) found under {root}")
+        with self._mlock:
+            self._mstats[sid] = {}
 
         with ThreadPoolExecutor(max_workers=config.UPLOAD_WORKERS) as ex:
             futures = [ex.submit(self._upload_one, sid, bucket, root, label, p, size, mtime, m_entries)
@@ -196,6 +203,15 @@ class Uploader:
         log_event("INFO", "upload",
                   f"Session #{sid} finished: {s['done_files']} uploaded, "
                   f"{s['skipped_files']} skipped, {s['failed_files']} failed")
+        with self._mlock:
+            ms = self._mstats.pop(sid, {})
+        if m_found:
+            lvl = "ERROR" if (ms.get("mismatch") or ms.get("algo_unsupported")) else "INFO"
+            log_event(lvl, "manifest",
+                      f"Session #{sid} manifest check: {ms.get('ok', 0)} ok, "
+                      f"{ms.get('mismatch', 0)} mismatch, {ms.get('not_in_manifest', 0)} not in manifest, "
+                      f"{ms.get('algo_unsupported', 0)} unsupported algorithm "
+                      f"({len(m_found)} manifest file(s))")
 
     # ---- single file ----
 
@@ -280,6 +296,10 @@ class Uploader:
                            uploaded_at=db.now(), verified_at=db.now(),
                            upload_seconds=round(elapsed, 3),
                            manifest_state=m_state, manifest_algo=m_algo, manifest_hash=m_hash)
+            if m_state:
+                with self._mlock:
+                    st = self._mstats.setdefault(sid, {})
+                    st[m_state] = st.get(m_state, 0) + 1
             db.bump_session(sid, done=1, bytes_done=bytes_to_credit)
             log_event("INFO", "upload",
                       f"verified: s3://{bucket}/{key} ({size:,} bytes in {elapsed:.1f}s, "

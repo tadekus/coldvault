@@ -4,6 +4,28 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.8.0
+
+- **ASC MHL support.** `.mhl` checksum manifests (ASC MHL v2 and older v1.x, as
+  written per card by offload tools) are now read alongside CSVs — at upload time and
+  in verify-later — so the whole offload, including sound (`.wav`), is covered, not
+  just what the camera CSV lists. Also supports XXH3. Default
+  `COLDVAULT_MANIFEST_EXTS` is now `.csv,.mhl`.
+- **Verify against a manifest later** (Index tab). Drag & drop manifest file(s), or
+  scan a server folder (e.g. a still-mounted drive) for every `.csv`/`.mhl` inside.
+  Cross-checks each listed file against the archive — present / size mismatch / not
+  archived — and attaches the manifest hash to the object, so a later restore +
+  download re-verifies the bytes. Optional key-scope filter disambiguates repeated
+  names (e.g. `4-10T01.wav` across shoot days).
+- **Deep verify** (opt-in, background): if the source files are still on a mounted
+  drive, re-hash them; when the local SHA-256 equals the archived object's, the
+  manifest comparison is a true byte-level verification of the archive — no restore
+  needed. Progress shown live; results become `csv✓` / `csv✗`.
+- **Diagnostics.** Startup logs whether the manifest check is on and whether `xxhash`
+  is installed (ERROR with the rebuild command if not); `/health` gains a
+  `manifest_check` block; every upload logs a one-line manifest summary (or that no
+  manifest was found). New `csv·` badge = listed in a manifest, bytes not yet re-hashed.
+
 ## 1.7.0
 
 - **`/health` monitoring endpoint.** Reports upload / restore / download status plus
