@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 
-# AWS CLI v2 (needed for aws s3api)
+# AWS CLI v2 (needed for aws s3api) + tzdata so TZ=Area/City resolves inside the
+# container (without it glibc can't load the zone and silently falls back to UTC,
+# which made every timestamp display in UTC).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl unzip \
+    && apt-get install -y --no-install-recommends curl unzip tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && ARCH="$(uname -m)" \
     && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscliv2.zip \

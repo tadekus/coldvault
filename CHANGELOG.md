@@ -4,6 +4,16 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.9.1
+
+- **Install `tzdata` in the image.** Without it glibc can't resolve `TZ=Area/City`
+  inside the container and silently falls back to UTC, so timestamps were written in
+  UTC even though the app asks for local time (a CEST host showed 02:06 for a 04:06
+  upload). Setting `TZ` in `.env` now works.
+- Startup logs the container's local time, zone and UTC offset, and `/health` reports
+  `timezone` — so a wrong clock is visible immediately instead of silently skewing
+  every timestamp.
+
 ## 1.9.0
 
 - **Sizes now use decimal (SI) units**, matching DIT/offload tools, drive capacities

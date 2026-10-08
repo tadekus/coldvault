@@ -132,6 +132,7 @@ def api_health():
         "status": "ok",
         "version": version.VERSION,
         "time": db.now(),
+        "timezone": time.strftime("%Z (UTC%z)"),
         "uptime_seconds": int(time.time() - START_TIME),
         "bucket": bucket,
         "objects": {"verified": fcount("verified"), "remote": fcount("remote"),
@@ -680,6 +681,10 @@ if __name__ == "__main__":
     log_event("INFO", "app",
               f"ColdVault {version.VERSION} started — bucket={config.BUCKET or '(not set!)'}, "
               f"storage_class={config.STORAGE_CLASS}, port={config.PORT}")
+    log_event("INFO", "app",
+              "local time is " + time.strftime("%Y-%m-%d %H:%M:%S %Z (UTC%z)") +
+              " — if that isn't your wall clock, set TZ in .env (e.g. TZ=Europe/Prague) "
+              "and recreate the container")
     if config.MANIFEST_CHECK:
         if manifest.xxhash_available():
             log_event("INFO", "manifest",
