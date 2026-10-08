@@ -52,7 +52,8 @@ def run_audit(bucket=None):
                 db.upsert_file(bucket, key, size=obj.get("Size"),
                                etag=(obj.get("ETag") or "").strip('"'),
                                storage_class=obj.get("StorageClass"),
-                               status="remote", uploaded_at=obj.get("LastModified"),
+                               status="remote",
+                               uploaded_at=db.to_local(obj.get("LastModified")),
                                audit_state="ok", audited_at=when)
                 imported += 1
 

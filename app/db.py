@@ -116,10 +116,42 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
 
 
+TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
 def now():
     # Local system time. The container inherits the host timezone via the
     # /etc/localtime mount (and/or TZ) in docker-compose; see .env.example.
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime(TIME_FMT)
+
+
+def to_local(value):
+    """Convert an S3 timestamp to local time in our display format.
+    Handles ISO 8601 ('2026-07-18T19:08:16+00:00', '…Z') and RFC 1123
+    ('Fri, 31 Jul 2027 00:00:00 GMT'). Returns the input unchanged if it
+    can't be parsed, and passes through values already in our format."""
+    if not value:
+        return value
+    s = str(value).strip()
+    try:  # already local / our format
+        datetime.strptime(s, TIME_FMT)
+        return s
+    except ValueError:
+        pass
+    dt = None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(s)
+        except Exception:
+            return s
+    if dt is None:
+        return s
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()          # -> local timezone
+    return dt.strftime(TIME_FMT)
 
 
 def _migrate():

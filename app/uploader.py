@@ -30,9 +30,9 @@ def make_key(label, rel):
 
 def fmt_speed(bps):
     for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if bps < 1024 or unit == "GB/s":
+        if bps < 1000 or unit == "GB/s":   # decimal (SI), as transfer tools report
             return f"{bps:.1f} {unit}"
-        bps /= 1024
+        bps /= 1000
 
 
 def _hash_file(path, extra_algo=None):

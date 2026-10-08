@@ -554,7 +554,13 @@ or just divide it.
   (`data/coldvault.db`) is your file inventory — worth backing up occasionally.
 - The web UI has no authentication — bind it to localhost or your LAN only
   (e.g. `127.0.0.1:9999:9999` in docker-compose) and don't expose it to the internet.
-- Timestamps are shown in **local time**. On Debian the container inherits the host
-  timezone via the `/etc/localtime` mount; set `TZ` in `.env` (e.g. `Europe/Prague`)
-  to force one, which is also how to set it on macOS. Rows written before this change
-  keep their old UTC values.
+- Timestamps are shown in **local time**, including values that come from S3 (restore
+  expiry dates and imported objects' last-modified), which are converted from UTC/GMT on
+  arrival. On Debian the container inherits the host timezone via the `/etc/localtime`
+  mount; set `TZ` in `.env` (e.g. `Europe/Prague`) to force one, which is also how to set
+  it on macOS. Rows written before v1.9.0 keep their original UTC/GMT values.
+- Sizes use **decimal (SI) units** — 1 TB = 1000⁴ bytes — the same convention as DIT
+  offload reports, drive capacities and Finder, so ColdVault's totals match what your
+  offload tool says. Hover a size in the Index to see the exact byte count. (Note that a
+  tool reporting binary "TiB" will show a smaller number for the same data: 1.65 TB =
+  1.5 TiB.)

@@ -487,7 +487,8 @@ def api_sync():
                 db.upsert_file(config.BUCKET, obj["Key"], size=obj.get("Size"),
                                etag=(obj.get("ETag") or "").strip('"'),
                                storage_class=obj.get("StorageClass"),
-                               status="remote", uploaded_at=obj.get("LastModified"))
+                               status="remote",
+                               uploaded_at=db.to_local(obj.get("LastModified")))
                 added += 1
     except AwsError as e:
         return jsonify({"error": str(e)[:500]}), 502

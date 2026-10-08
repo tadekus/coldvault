@@ -4,6 +4,18 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.9.0
+
+- **Sizes now use decimal (SI) units**, matching DIT/offload tools, drive capacities
+  and Finder: 1 TB = 1000⁴ bytes. Previously ColdVault divided by 1024 but labelled the
+  result "TB", so a 1.65 TB upload read as "1.5 TB" and disagreed with the DIT report —
+  same bytes, wrong label. Applies to the UI, email reports and transfer speeds. Hover a
+  size in the Index for the exact byte count.
+- **All timestamps are local time.** S3-supplied values are now converted on ingest
+  too — restore expiry (`…GMT`) and imported objects' `LastModified` (`…Z`) were
+  previously stored and shown raw in UTC/GMT. Restore-expiry checks understand both the
+  new local format and existing GMT rows, so nothing re-evaluates incorrectly.
+
 ## 1.8.1
 
 - Fix verify-later reporting most files as "not archived" for Silverstack exports
