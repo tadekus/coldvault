@@ -20,7 +20,9 @@ function fmtBytes(n) {
   if (n == null) return "—";
   const u = ["B", "KB", "MB", "GB", "TB", "PB"];
   let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  // Decimal (SI) units — 1 TB = 1000^4 bytes — matching DIT/offload tools,
+  // drive capacities and Finder, so our totals agree with the DIT report.
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
   return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + " " + u[i];
 }
 
@@ -389,6 +391,7 @@ async function loadFiles() {
   const r = await api("/api/files?" + q);
   fillBucketFilter(r.buckets, r.active);
   $("#filesSummary").textContent = `${r.total.toLocaleString()} objects · ${fmtBytes(r.total_bytes)}`;
+  $("#filesSummary").title = `${(r.total_bytes || 0).toLocaleString()} bytes exactly`;
   $("#pageInfo").textContent = `page ${page + 1} / ${Math.max(1, Math.ceil(r.total / PAGE_SIZE))}`;
   $("#prevPage").disabled = page === 0;
   $("#nextPage").disabled = (page + 1) * PAGE_SIZE >= r.total;
@@ -402,7 +405,7 @@ async function loadFiles() {
       <td><input type="checkbox" class="sel" data-id="${esc(id)}" ${selected.has(id) ? "checked" : ""}></td>
       <td class="mono">${esc(f.bucket)}</td>
       <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
-      <td class="num">${fmtBytes(f.size)}</td>
+      <td class="num" title="${(f.size || 0).toLocaleString()} bytes">${fmtBytes(f.size)}</td>
       <td>${chip(f.status)}${f.audit_state && f.audit_state !== "ok" ? " " + chip(f.audit_state) : ""}${manifestBadge(f.manifest_state)}</td>
       <td>${rst}</td>
       <td class="mono">${esc(f.uploaded_at || "—")}</td>

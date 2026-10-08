@@ -64,7 +64,7 @@ def check_pending():
         header = resp.get("Restore") or ""
         if 'ongoing-request="false"' in header:
             m = re.search(r'expiry-date="([^"]+)"', header)
-            expiry = m.group(1) if m else None
+            expiry = db.to_local(m.group(1)) if m else None
             db.update_restore(r["id"], status="completed", expiry=expiry,
                               last_checked=db.now())
             log_event("INFO", "restore",

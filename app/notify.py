@@ -23,9 +23,9 @@ USER_AGENT = f"ColdVault/{version.VERSION}"
 def _fmt_bytes(n):
     n = float(n or 0)
     for u in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if n < 1024 or u == "PB":
+        if n < 1000 or u == "PB":   # decimal (SI) units, as DIT tools report
             return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}"
-        n /= 1024
+        n /= 1000
 
 
 def enabled():

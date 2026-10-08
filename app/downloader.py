@@ -21,20 +21,26 @@ READ_BLOCK = 8 * 1024 * 1024
 
 def fmt_speed(bps):
     for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if bps < 1024 or unit == "GB/s":
+        if bps < 1000 or unit == "GB/s":   # decimal (SI), as transfer tools report
             return f"{bps:.1f} {unit}"
-        bps /= 1024
+        bps /= 1000
 
 
 def restore_expired(expiry):
-    """True if an S3 restore expiry-date (e.g. 'Fri, 31 Jul 2026 00:00:00 GMT')
-    is in the past — the object is no longer available to download."""
+    """True if a restore's expiry is in the past — the object is no longer
+    available to download. Accepts our local format ('2027-07-31 00:00:00',
+    stored since v1.9.0) and the raw S3 GMT form kept on older rows."""
     if not expiry:
         return False
-    try:
+    from datetime import datetime, timezone
+    s = str(expiry).strip()
+    try:  # local naive (current format)
+        return datetime.strptime(s, db.TIME_FMT) < datetime.now()
+    except ValueError:
+        pass
+    try:  # legacy rows: RFC 1123 GMT from S3
         from email.utils import parsedate_to_datetime
-        from datetime import datetime, timezone
-        exp = parsedate_to_datetime(expiry)
+        exp = parsedate_to_datetime(s)
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
         return exp < datetime.now(timezone.utc)
