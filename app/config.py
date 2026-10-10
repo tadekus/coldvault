@@ -64,6 +64,10 @@ DEDUPE = env_bool("COLDVAULT_DEDUPE", True)
 # Cross-check uploaded files against offload/DIT checksum manifests (Silverstack,
 # YoYotta, …) found in the source folder. Matches by filename, compares the
 # manifest's hash (xxh64/md5/sha1/sha256) computed alongside the upload SHA-256.
+# After a fully successful canary upload, flag the drive as ready to unmount. The
+# container can't unmount a host filesystem, so a host-side helper (see
+# deploy/usb-automount/coldvault-eject.sh) polls /api/eject/pending and does it.
+EJECT_AFTER_UPLOAD = env_bool("COLDVAULT_EJECT_AFTER_UPLOAD", False)
 MANIFEST_CHECK = env_bool("COLDVAULT_MANIFEST_CHECK", True)
 MANIFEST_EXTS = tuple(("." + e.lstrip(".").lower())
                       for e in _csv("COLDVAULT_MANIFEST_EXTS", ".csv,.mhl"))

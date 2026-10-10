@@ -16,6 +16,8 @@ unplug). That makes it much smaller than a full sync tool.
 | `coldvault-usb-clean.sh` | `/usr/local/sbin/coldvault-usb-clean` | lazy-unmounts a stale `/media` mount on unplug |
 | `coldvault-usb-mount@.service` | `/etc/systemd/system/` | runs the mount helper for a device instance |
 | `99-coldvault-usb.rules` | `/etc/udev/rules.d/` | on USB add → start service; on remove → clean |
+| `coldvault-eject.sh` | `/usr/local/sbin/coldvault-eject` | unmounts drives ColdVault reports as finished |
+| `coldvault-eject.service` + `.timer` | `/etc/systemd/system/` | runs the eject helper every 30s |
 
 ## Install
 
@@ -44,6 +46,28 @@ cd ~/coldvault && docker compose logs -f coldvault | grep -iE 'canary|Session'
 ```
 
 Test the mount helper without a plug event: `sudo /usr/local/sbin/coldvault-usb-mount sdb1`.
+
+## Auto-eject after a successful upload
+
+Optional, off by default. Set `COLDVAULT_EJECT_AFTER_UPLOAD=true` in ColdVault's
+`.env` and restart the container. A canary upload that finishes with **zero failed
+files** then flags its drive on `/api/eject/pending`; the installed
+`coldvault-eject.timer` polls that endpoint every 30s, unmounts the drive, removes
+the empty mount point and reports the outcome back (logged in the app under the
+`eject` category). A session with any failure is never flagged — the drive stays
+mounted and the log says why.
+
+The container never unmounts a host filesystem itself; it only publishes the
+request, and this host-side helper performs it.
+
+```bash
+systemctl status coldvault-eject.timer
+sudo /usr/local/sbin/coldvault-eject            # run one pass by hand
+tail -f /var/log/coldvault-usb/coldvault-eject.log
+```
+
+If ColdVault isn't on `http://127.0.0.1:9999`, set `COLDVAULT_API` in
+`/etc/systemd/system/coldvault-eject.service`.
 
 ## Uninstall
 

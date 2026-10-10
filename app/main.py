@@ -29,9 +29,34 @@ watch = watcher_mod.Watcher(up)
 down = downloader_mod.Downloader()
 
 
+_eject_pending = {}   # mount -> {label, session_id, files, bytes, since}
+
+
 def _after_upload(sid, trigger):
-    # After a watcher (canary) upload, audit the bucket and email the report.
-    if trigger == "canary" and config.NOTIFY:
+    if trigger != "canary":
+        return
+    # Flag the drive for unmount only when the session was completely clean and
+    # nothing else is queued for it. A host helper performs the actual unmount.
+    if config.EJECT_AFTER_UPLOAD:
+        try:
+            s = db.get_session(sid)
+            busy = up.queue_size() or any(
+                m == s["source"] for m in _eject_pending)
+            if s and s["status"] == "done" and not s["failed_files"] and not busy:
+                _eject_pending[s["source"]] = {
+                    "label": s["label"], "session_id": sid,
+                    "files": s["done_files"], "bytes": s["done_bytes"],
+                    "since": db.now()}
+                log_event("INFO", "eject",
+                          f"{s['source']} ready to unmount — session #{sid} completed "
+                          f"with {s['done_files']} file(s), 0 failed")
+            elif s and (s["failed_files"] or s["status"] != "done"):
+                log_event("WARNING", "eject",
+                          f"not flagging {s['source']} for unmount — session #{sid} "
+                          f"status={s['status']}, {s['failed_files']} failed")
+        except Exception as e:
+            log_event("ERROR", "eject", f"eject flagging failed for #{sid}: {e}")
+    if config.NOTIFY:
         notify.notify_upload_complete(sid)
 
 
@@ -447,13 +472,67 @@ def api_manifest_jobs():
     return jsonify(manifest_verify.jobs())
 
 
+@app.get("/api/eject/pending")
+def api_eject_pending():
+    """Drives whose canary upload finished cleanly and can now be unmounted.
+    Polled by the host-side helper (the container cannot unmount host mounts)."""
+    return jsonify({"enabled": config.EJECT_AFTER_UPLOAD,
+                    "pending": [dict(mount=m, **v) for m, v in _eject_pending.items()]})
+
+
+@app.post("/api/eject/done")
+def api_eject_done():
+    """Host helper reports the outcome of an unmount."""
+    data = request.get_json(force=True)
+    mount = (data.get("mount") or "").strip()
+    ok = bool(data.get("ok"))
+    detail = (data.get("detail") or "").strip()
+    info = _eject_pending.pop(mount, None)
+    if ok:
+        log_event("INFO", "eject", f"unmounted {mount}"
+                  + (f" (label '{info['label']}')" if info else "") + " — safe to remove")
+    else:
+        log_event("ERROR", "eject", f"host failed to unmount {mount}: {detail or 'unknown'}")
+        if info:
+            _eject_pending[mount] = info   # keep it pending so the helper retries
+    return jsonify({"ok": True, "remaining": len(_eject_pending)})
+
+
+@app.get("/api/tree")
+def api_tree():
+    """Lazy tree of the archive: sub-folders (with subtree totals) and the files
+    directly under a key prefix."""
+    bucket = request.args.get("bucket") or config.BUCKET
+    prefix = request.args.get("prefix") or ""
+    folders, files = db.tree_children(bucket, prefix)
+    return jsonify({
+        "bucket": bucket, "prefix": prefix,
+        "folders": [{"name": f["name"], "prefix": prefix + f["name"],
+                     "count": f["c"], "bytes": f["b"]} for f in folders],
+        "files": [{"key": f["key"], "name": f["key"][len(prefix):], "size": f["size"],
+                   "status": f["status"], "manifest_state": f["manifest_state"],
+                   "expires_at": f["expires_at"]} for f in files],
+    })
+
+
+@app.get("/api/retention/permission")
+def api_retention_permission():
+    """Whether this IAM user can delete — probed, not assumed."""
+    bucket = request.args.get("bucket") or config.BUCKET
+    allowed, detail = retention.can_delete(bucket)
+    return jsonify({"bucket": bucket, "can_delete": allowed, "detail": detail})
+
+
 def _retention_rows(data, bucket):
-    """Resolve a request body to index rows: explicit keys, or a key prefix."""
+    """Resolve a request body to index rows: explicit keys and/or key prefixes."""
     keys = data.get("keys") or None
+    prefixes = data.get("prefixes") or None
     prefix = (data.get("prefix") or "").strip() or None
-    if not keys and not prefix:
-        return None, "give either keys[] or a prefix"
-    return db.files_for_retention(bucket, prefix, keys), None
+    if prefix:
+        prefixes = (prefixes or []) + [prefix]
+    if not keys and not prefixes:
+        return None, "give keys[] and/or prefix(es)"
+    return db.keys_under(bucket, prefixes, keys), None
 
 
 @app.post("/api/retention/preview")
@@ -461,11 +540,11 @@ def api_retention_preview():
     """What would be affected: count, bytes, early-deletion exposure, versioning."""
     data = request.get_json(force=True)
     bucket = (data.get("bucket") or "").strip() or config.BUCKET
-    prefix = (data.get("prefix") or "").strip() or None
-    keys = data.get("keys") or None
-    if not keys and prefix is None:
-        return jsonify({"error": "give either keys[] or a prefix"}), 400
-    return jsonify(retention.preview(bucket, prefix, keys))
+    rows, err = _retention_rows(data, bucket)
+    if err:
+        return jsonify({"error": err}), 400
+    label = data.get("prefix") or ", ".join(data.get("prefixes") or []) or "selected keys"
+    return jsonify(retention.preview_rows(bucket, rows, label))
 
 
 @app.post("/api/retention/expiry")
@@ -549,6 +628,14 @@ def api_sessions():
 def api_restore():
     data = request.get_json(force=True)
     items = data.get("items") or []
+    # A ticked folder in the tree arrives as a prefix: expand it from the index.
+    prefixes = data.get("prefixes") or []
+    if prefixes:
+        bucket = (data.get("bucket") or "").strip() or config.BUCKET
+        seen = {(i.get("bucket") or bucket, i.get("key")) for i in items}
+        for r in db.keys_under(bucket, prefixes, None):
+            if (r["bucket"], r["key"]) not in seen:
+                items.append({"bucket": r["bucket"], "key": r["key"]})
     if not items:
         return jsonify({"error": "no objects given"}), 400
     try:

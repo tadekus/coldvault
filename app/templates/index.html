@@ -16,6 +16,7 @@
     <button class="tab" data-tab="sessions">Sessions</button>
     <button class="tab" data-tab="restores">Restores</button>
     <button class="tab" data-tab="downloads">Downloads</button>
+    <button class="tab" data-tab="tree">Tree</button>
     <button class="tab" data-tab="retention">Retention</button>
     <button class="tab" data-tab="logs">Logs</button>
     <button class="tab tab-right" data-tab="notify">✉ Notifications</button>
@@ -259,7 +260,7 @@
       <option value="">all categories</option>
       <option>upload</option><option>download</option><option>watcher</option>
       <option>restore</option><option>audit</option><option>manifest</option>
-      <option>retention</option><option>editlist</option>
+      <option>retention</option><option>editlist</option><option>eject</option>
       <option>aws</option><option>app</option>
     </select>
     <input id="logSearch" placeholder="filter…" style="flex:1">
@@ -274,8 +275,33 @@
   </div>
 </section>
 
+<!-- ================= TREE ================= -->
+<section id="tab-tree" class="panel">
+  <div class="row toolbar restorebar">
+    <span id="trSel" class="muted">nothing selected</span>
+    <button id="btnTrClear" class="secondary">Clear</button>
+    <span class="spacer"></span>
+    <select id="trTier">
+      <option value="Bulk">Bulk (~48h, cheapest)</option>
+      <option value="Standard">Standard (~12h)</option>
+    </select>
+    <label>days <input id="trDays" type="number" value="7" min="1" max="365" style="width:70px"></label>
+    <button id="btnTrRestore">Restore selected</button>
+    <button id="btnTrDelete" class="danger">Delete selected…</button>
+  </div>
+  <div id="trResult" class="muted" style="margin-bottom:8px"></div>
+  <div class="box">
+    <div class="muted" style="font-size:12px;margin-bottom:6px">
+      Tick a <b>folder</b> to act on everything inside it, or tick individual files.
+      Click a folder name to expand it.
+    </div>
+    <div id="treeRoot" class="tree">loading…</div>
+  </div>
+</section>
+
 <!-- ================= RETENTION ================= -->
 <section id="tab-retention" class="panel">
+  <div id="rtPerm" class="box" style="display:none"></div>
   <div class="box">
     <h3>Select objects</h3>
     <div class="row">
