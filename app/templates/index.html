@@ -355,15 +355,20 @@
   </div>
 
   <div class="box">
-    <h3>Due for expiry <span id="rtDueCount" class="muted"></span></h3>
+    <h3>Expiry schedule <span id="rtDueCount" class="muted"></span></h3>
     <div class="row">
+      <select id="rtDueScope">
+        <option value="all">all scheduled</option>
+        <option value="due">due now only</option>
+      </select>
       <button id="btnRtDueRefresh" class="secondary">Refresh</button>
       <button id="btnRtDeleteDue" class="danger">Delete all due…</button>
       <span id="rtDueResult" class="muted"></span>
     </div>
     <div class="tablewrap">
       <table id="rtDueTable">
-        <thead><tr><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th><th>Early-delete</th></tr></thead>
+        <thead><tr><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th>
+          <th>In</th><th>Early-delete</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

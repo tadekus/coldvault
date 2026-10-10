@@ -487,8 +487,8 @@ Tick a **folder** to act on everything inside it, or tick individual files, then
   selection (the prefix is expanded server-side, so a folder of thousands of clips is
   one click, not thousands of checkboxes).
 - **Set / Clear expiry** — schedules a planned deletion date for the selection, the
-  same mechanism as the Retention tab. Scheduling never deletes: due items are listed
-  in **Retention** for you to action deliberately.
+  same mechanism as the Retention tab. Scheduling never deletes: what you schedule is
+  listed under **Retention → Expiry schedule**, to action deliberately once it's due.
 - **Delete selected** — runs the same guarded flow as the Retention tab: a preview of
   what it covers, the cost warnings, a confirmation, and typing the bucket name.
 
@@ -524,8 +524,10 @@ irreversible thing ColdVault does, so it is deliberately a three-step flow.
    - **Bucket versioning.** If versioning is enabled, a delete only writes a delete
      marker: the object versions, and their cost, remain until purged.
 2. **Schedule expiry (optional).** Set a planned deletion date on the previewed set, or
-   clear it. **Nothing is ever deleted automatically** — scheduled objects simply appear
-   under **Due for expiry** when their date passes, for you to action.
+   clear it. **Nothing is ever deleted automatically.** The **Expiry schedule** table
+   lists everything you've scheduled with a countdown to its date, and a per-row
+   **clear** to unschedule one object; switch it to *due now only* to see just what has
+   come due and is waiting for you to action.
 3. **Delete.** Either **Delete previewed…** or **Delete all due…**. Both require
    confirming the summary and then typing the bucket name. An empty match is refused, so
    a mistyped prefix can't turn into a mass delete.

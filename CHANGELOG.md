@@ -4,6 +4,17 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.12.1
+
+- **A scheduled expiry is now visible before it falls due.** The Retention table
+  only ever listed objects whose date had already passed, so setting a date in the
+  future looked as though it hadn't registered (the counter said "of 98 scheduled"
+  but the table was empty). It's now an **Expiry schedule** with an *all
+  scheduled* / *due now only* switch, defaulting to all, plus an **In** column
+  counting down the days and a per-row **clear** to unschedule one object. The
+  empty state explains what's scheduled and when the earliest one falls due
+  instead of claiming there's nothing.
+
 ## 1.12.0
 
 - **The tree no longer collapses when you tick something.** Ticking a folder used

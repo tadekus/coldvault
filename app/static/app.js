@@ -940,7 +940,7 @@ async function trExpiry(date) {
     }});
     $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ expiry ${
       date ? "set to " + esc(date) : "cleared"} for ${r.updated.toLocaleString()} object(s)</span>`
-      + ` <span class="muted">· nothing is deleted automatically — due items are listed in Retention</span>`;
+      + ` <span class="muted">· nothing is deleted automatically — see Retention → Expiry schedule</span>`;
     loadTree();
   } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
 }
@@ -1087,6 +1087,7 @@ async function rtDelete({ due }) {
 $("#btnRtDelete").onclick = () => rtDelete({ due: false });
 $("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });
 $("#btnRtDueRefresh").onclick = () => loadRetention();
+$("#rtDueScope").onchange = () => loadRetention();
 
 async function loadRetentionPermission() {
   const el = $("#rtPerm");
@@ -1119,20 +1120,46 @@ async function loadRetentionPermission() {
 async function loadRetention() {
   loadRetentionPermission();
   try {
+    const scope = $("#rtDueScope").value;
     const [due, del] = await Promise.all([
-      api("/api/retention/due?bucket=" + encodeURIComponent(rtBucket())),
+      api(`/api/retention/due?scope=${scope}&bucket=` + encodeURIComponent(rtBucket())),
       api("/api/deletions?bucket=" + encodeURIComponent(rtBucket())),
     ]);
     $("#rtDueCount").textContent =
-      `— ${due.due} due (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`;
+      `— ${due.due} due now (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`
+      + (due.next_expiry && !due.due ? ` · earliest ${due.next_expiry.slice(0, 10)}` : "");
     $("#btnRtDeleteDue").disabled = due.due === 0 || trCanDelete !== true;
-    $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr>
+    $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr${i.due ? "" : ' style="opacity:.8"'}>
         <td class="key">${esc(i.key)}</td>
         <td class="num" title="${(i.size || 0).toLocaleString()} bytes">${fmtBytes(i.size)}</td>
         <td class="mono">${esc(i.uploaded_at || "—")}</td>
         <td class="mono">${esc(i.expires_at || "—")}</td>
+        <td class="num">${i.due ? `<span style="color:var(--warn)">due</span>`
+                                : `${(i.days_left ?? 0).toLocaleString()}d`}</td>
         <td class="num">${i.early_days ? `<span style="color:var(--warn)">${i.early_days}d billed</span>` : "—"}</td>
-      </tr>`).join("") || `<tr><td colspan="5" class="muted" style="padding:20px">nothing due — schedule an expiry above</td></tr>`;
+        <td><button class="secondary rtUnset" data-key="${esc(i.key)}"
+                    title="remove this object's expiry date">clear</button></td>
+      </tr>`).join("") || `<tr><td colspan="7" class="muted" style="padding:20px">${
+        due.scheduled
+          ? (scope === "due"
+              ? `nothing is due yet — ${due.scheduled.toLocaleString()} object(s) are scheduled${
+                  due.next_expiry ? `, the earliest on ${esc(due.next_expiry.slice(0, 10))}` : ""
+                }. Switch to <b>all scheduled</b> to see them.`
+              : "nothing scheduled")
+          : "nothing scheduled — set an expiry above, or tick a folder in the Tree tab"
+      }</td></tr>`;
+    if (due.truncated) {
+      $("#rtDueTable tbody").insertAdjacentHTML("beforeend",
+        `<tr><td colspan="7" class="muted">showing the first 500 of ${due.scheduled.toLocaleString()}</td></tr>`);
+    }
+    $("#rtDueTable").querySelectorAll(".rtUnset").forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api("/api/retention/expiry", { body: {
+          bucket: rtBucket(), keys: [b.dataset.key], date: null } });
+        loadRetention();
+      } catch (e) { b.disabled = false; alert("✘ " + e.message); }
+    });
 
     const t = del.totals;
     $("#rtDelTotals").textContent = `— ${t.count} object(s), ${fmtBytes(t.bytes)} removed${t.early ? `, ${t.early} early` : ""}`;

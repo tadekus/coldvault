@@ -53,6 +53,14 @@ def early_days(row, as_of=None):
     return max(0, rem)
 
 
+def days_left(row, as_of=None):
+    """Days until the planned deletion date; 0 once it's due, None if unset."""
+    when = _parse(row.get("expires_at"))
+    if not when:
+        return None
+    return max(0, (when - (as_of or datetime.now())).days)
+
+
 def can_delete(bucket):
     """Is this IAM user allowed to delete from the bucket?
 
