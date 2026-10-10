@@ -4,6 +4,24 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.10.0
+
+- **Retention tab** — manage expiry and deletion of archived folders and files.
+  - **Preview first:** enter a key prefix (a folder) and see exactly how many objects
+    and bytes match, before anything happens.
+  - **Cost awareness:** Deep Archive bills a 180-day minimum storage duration (Glacier
+    90), so the preview flags objects still inside it and how many days you'd still be
+    billed for. It also warns when **bucket versioning** is enabled, where a delete only
+    adds a delete marker and the versions keep costing.
+  - **Schedule expiry:** set or clear a planned deletion date. Nothing is ever deleted
+    automatically — due items are listed for you to action deliberately.
+  - **Delete permanently:** removes objects from S3 and the index. Guarded by a preview,
+    a confirmation dialog and typing the bucket name; an empty match is refused.
+  - **Audit trail:** every deleted object leaves a tombstone row (key, size, checksums,
+    upload date, reason, mode, early-deletion days) in a new `deletions` table that
+    outlives the index entry, plus full logging under a new `retention` category. A
+    failed delete leaves the index row intact and writes no tombstone.
+
 ## 1.9.1
 
 - **Install `tzdata` in the image.** Without it glibc can't resolve `TZ=Area/City`

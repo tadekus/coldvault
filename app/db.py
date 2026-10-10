@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS files(
   manifest_state TEXT,     -- ok | mismatch | not_in_manifest | algo_unsupported
   manifest_algo TEXT,
   manifest_hash TEXT,
+  expires_at TEXT,         -- planned deletion date (ColdVault-managed retention)
   UNIQUE(bucket, key)
 );
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
@@ -98,6 +99,24 @@ CREATE TABLE IF NOT EXISTS downloads(
 );
 CREATE INDEX IF NOT EXISTS idx_downloads_key ON downloads(bucket, key);
 CREATE INDEX IF NOT EXISTS idx_downloads_session ON downloads(session_id);
+
+-- Permanent audit trail of deleted objects. Rows here OUTLIVE the files row,
+-- so the archive can always answer "what was removed, when, by which action".
+CREATE TABLE IF NOT EXISTS deletions(
+  id INTEGER PRIMARY KEY,
+  bucket TEXT,
+  key TEXT,
+  size INTEGER,
+  sha256 TEXT,
+  manifest_hash TEXT,
+  uploaded_at TEXT,
+  expires_at TEXT,
+  deleted_at TEXT,
+  reason TEXT,
+  mode TEXT,               -- manual | expiry
+  early_days INTEGER       -- days short of the storage-class minimum (0 = none)
+);
+CREATE INDEX IF NOT EXISTS idx_deletions_bucket ON deletions(bucket, deleted_at);
 
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
@@ -168,7 +187,8 @@ def _migrate():
                           ("audited_at", "TEXT"),
                           ("manifest_state", "TEXT"),
                           ("manifest_algo", "TEXT"),
-                          ("manifest_hash", "TEXT")):
+                          ("manifest_hash", "TEXT"),
+                          ("expires_at", "TEXT")):
             if col not in cols:
                 print(f"[db] adding {col} column to files")
                 _conn.execute(f"ALTER TABLE files ADD COLUMN {col} {decl}")
@@ -456,6 +476,73 @@ def set_manifest(file_id, state, algo, mhash):
 
 def get_file_by_id(file_id):
     return _row("SELECT * FROM files WHERE id=?", (file_id,))
+
+
+# ---- retention / deletion ----
+
+def files_for_retention(bucket, prefix=None, keys=None, limit=100000):
+    where, params = "WHERE bucket=?", [bucket]
+    if prefix:
+        esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where += " AND key LIKE ? ESCAPE '\\'"
+        params.append(f"{esc}%")
+    if keys:
+        where += f" AND key IN ({','.join('?' * len(keys))})"
+        params += list(keys)
+    return _rows(f"SELECT * FROM files {where} ORDER BY key LIMIT ?", params + [limit])
+
+
+def set_expiry(bucket, keys, when):
+    """Set (or clear, when None) the planned deletion date on specific keys."""
+    n = 0
+    for k in keys:
+        n += _exec("UPDATE files SET expires_at=? WHERE bucket=? AND key=?",
+                   (when, bucket, k)).rowcount
+    return n
+
+
+def files_due(bucket, as_of):
+    return _rows("SELECT * FROM files WHERE bucket=? AND expires_at IS NOT NULL "
+                 "AND expires_at <= ? ORDER BY expires_at, key", (bucket, as_of))
+
+
+def count_scheduled(bucket):
+    r = _row("SELECT COUNT(*) c, COALESCE(SUM(size),0) b FROM files "
+             "WHERE bucket=? AND expires_at IS NOT NULL", (bucket,))
+    return r["c"], r["b"]
+
+
+def record_deletion(row, reason, mode, early_days):
+    _exec("""INSERT INTO deletions(bucket, key, size, sha256, manifest_hash,
+             uploaded_at, expires_at, deleted_at, reason, mode, early_days)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+          (row["bucket"], row["key"], row["size"], row.get("sha256"),
+           row.get("manifest_hash"), row.get("uploaded_at"), row.get("expires_at"),
+           now(), reason, mode, early_days))
+
+
+def drop_file(bucket, key):
+    return _exec("DELETE FROM files WHERE bucket=? AND key=?", (bucket, key)).rowcount
+
+
+def list_deletions(bucket=None, limit=300):
+    where, params = "", []
+    if bucket:
+        where = "WHERE bucket=?"
+        params = [bucket]
+    return _rows(f"SELECT * FROM deletions {where} ORDER BY id DESC LIMIT ?",
+                 params + [limit])
+
+
+def deletion_totals(bucket=None):
+    where, params = "", []
+    if bucket:
+        where = "WHERE bucket=?"
+        params = [bucket]
+    r = _row(f"SELECT COUNT(*) c, COALESCE(SUM(size),0) b, "
+             f"COALESCE(SUM(CASE WHEN early_days>0 THEN 1 ELSE 0 END),0) early "
+             f"FROM deletions {where}", params)
+    return {"count": r["c"], "bytes": r["b"], "early": r["early"]}
 
 
 def audit_issue_counts(bucket):
