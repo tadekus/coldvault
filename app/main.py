@@ -595,14 +595,25 @@ def api_retention_expiry():
 @app.get("/api/retention/due")
 def api_retention_due():
     bucket = request.args.get("bucket") or config.BUCKET
-    rows = db.files_due(bucket, db.now())
+    # scope=all lists everything scheduled, not just what's already due — so a
+    # date set for next year is visible instead of looking like it didn't take.
+    scope = (request.args.get("scope") or "due").lower()
+    now = db.now()
+    due_rows = db.files_due(bucket, now)
+    rows = db.files_scheduled(bucket) if scope == "all" else due_rows
     sched_count, sched_bytes = db.count_scheduled(bucket)
     return jsonify({
-        "bucket": bucket, "due": len(rows),
-        "due_bytes": sum(int(r["size"] or 0) for r in rows),
+        "bucket": bucket, "scope": scope,
+        "due": len(due_rows),
+        "due_bytes": sum(int(r["size"] or 0) for r in due_rows),
         "scheduled": sched_count, "scheduled_bytes": sched_bytes,
+        "next_expiry": db.next_expiry(bucket),
+        "shown": len(rows[:500]), "truncated": len(rows) > 500,
         "items": [{"key": r["key"], "size": r["size"], "expires_at": r["expires_at"],
-                   "uploaded_at": r["uploaded_at"], "early_days": retention.early_days(r)}
+                   "uploaded_at": r["uploaded_at"],
+                   "early_days": retention.early_days(r),
+                   "days_left": retention.days_left(r),
+                   "due": (r["expires_at"] or "") <= now}
                   for r in rows[:500]],
     })
 
