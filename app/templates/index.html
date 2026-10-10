@@ -289,11 +289,25 @@
     <button id="btnTrRestore">Restore selected</button>
     <button id="btnTrDelete" class="danger">Delete selected…</button>
   </div>
+  <div class="row toolbar restorebar">
+    <span class="muted">Expiry</span>
+    <input id="trExpDate" type="date" style="width:160px">
+    <button id="btnTrExpiry" class="secondary">Set expiry</button>
+    <button id="btnTrExpiryClear" class="secondary">Clear expiry</button>
+    <span class="muted" style="font-size:12px">schedules only — nothing is deleted automatically</span>
+    <span class="spacer"></span>
+    <span class="muted">Export</span>
+    <button id="btnTrXlsx" class="secondary">Excel</button>
+    <button id="btnTrPdf" class="secondary">PDF</button>
+    <button id="btnTrCsv" class="secondary">CSV</button>
+  </div>
   <div id="trResult" class="muted" style="margin-bottom:8px"></div>
   <div class="box">
     <div class="muted" style="font-size:12px;margin-bottom:6px">
       Tick a <b>folder</b> to act on everything inside it, or tick individual files.
-      Click a folder name to expand it.
+      Click a folder name to expand it — open folders stay open while you work.
+      <b>Export</b> writes the whole tree with per-folder sizes and totals, stamped
+      with the bucket name and the time; it covers the bucket, not just the selection.
     </div>
     <div id="treeRoot" class="tree">loading…</div>
   </div>
