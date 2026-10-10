@@ -540,10 +540,13 @@ def api_tree_export():
 
 @app.get("/api/retention/permission")
 def api_retention_permission():
-    """Whether this IAM user can delete — probed, not assumed."""
+    """Whether this IAM user can delete — probed once, then cached. ?recheck=1
+    re-probes (the only thing that issues another delete-object)."""
     bucket = request.args.get("bucket") or config.BUCKET
-    allowed, detail = retention.can_delete(bucket)
-    return jsonify({"bucket": bucket, "can_delete": allowed, "detail": detail})
+    recheck = request.args.get("recheck") in ("1", "true", "yes")
+    allowed, detail, checked_at = retention.can_delete(bucket, recheck=recheck)
+    return jsonify({"bucket": bucket, "can_delete": allowed, "detail": detail,
+                    "checked_at": checked_at, "probe_enabled": config.DELETE_PROBE})
 
 
 def _retention_rows(data, bucket):

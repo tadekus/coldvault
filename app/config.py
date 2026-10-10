@@ -68,6 +68,10 @@ DEDUPE = env_bool("COLDVAULT_DEDUPE", True)
 # container can't unmount a host filesystem, so a host-side helper (see
 # deploy/usb-automount/coldvault-eject.sh) polls /api/eject/pending and does it.
 EJECT_AFTER_UPLOAD = env_bool("COLDVAULT_EJECT_AFTER_UPLOAD", False)
+# Probe whether this IAM user can delete (a delete-object on a random, never-used
+# key — it removes nothing), so the Retention tab can say so. Probed once and
+# cached; re-run only from the Re-check button. Set false to never call delete.
+DELETE_PROBE = env_bool("COLDVAULT_DELETE_PROBE", True)
 MANIFEST_CHECK = env_bool("COLDVAULT_MANIFEST_CHECK", True)
 MANIFEST_EXTS = tuple(("." + e.lstrip(".").lower())
                       for e in _csv("COLDVAULT_MANIFEST_EXTS", ".csv,.mhl"))

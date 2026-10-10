@@ -4,6 +4,25 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.12.2
+
+- **The delete-permission probe no longer runs on every render, and no longer
+  looks like a failure.** It fired on each Retention/Tree load — including after
+  every single-row expiry clear — filling the log with alarming `ERROR aws …
+  DeleteObject … AccessDenied` lines. It never touched your data (the key is a
+  random one under `.coldvault-permission-probe/` that has never existed, and S3's
+  delete is idempotent), but it read like the app was trying to delete files.
+  - Probed **once and remembered**; re-probed only via a new **Re-check** button.
+  - Logged as one plain `retention` line stating the conclusion, not as an AWS
+    error. `s3:GetBucketVersioning` being denied is likewise no longer an ERROR —
+    not knowing simply means the preview can't warn about delete markers.
+  - `COLDVAULT_DELETE_PROBE=false` disables it outright: ColdVault then never
+    issues a delete call, and the banner reads "unknown".
+  - As a side effect, on a versioned bucket the probe can no longer accumulate
+    delete markers — at most one, ever, instead of one per page load.
+- **Clear all shown** in the Expiry schedule unschedules the whole list in one
+  call, instead of one click (and one log line) per object.
+
 ## 1.12.1
 
 - **A scheduled expiry is now visible before it falls due.** The Retention table
