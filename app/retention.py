@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import awsapi
 import config
@@ -52,6 +53,24 @@ def early_days(row, as_of=None):
     return max(0, rem)
 
 
+def can_delete(bucket):
+    """Is this IAM user allowed to delete from the bucket?
+
+    Probes with delete-object on a random key under a reserved prefix. S3's
+    delete is idempotent, so a key that doesn't exist is removed from nothing —
+    the call only tells us whether the permission exists. Returns
+    (True|False|None, detail); None means we couldn't tell (e.g. network)."""
+    key = f".coldvault-permission-probe/{uuid4().hex}"
+    try:
+        awsapi.s3api("delete-object", "--bucket", bucket, "--key", key, log=False)
+        return True, None
+    except Exception as e:
+        msg = str(e)
+        if "AccessDenied" in msg or "not authorized" in msg or "Forbidden" in msg:
+            return False, "AccessDenied — the IAM user has no s3:DeleteObject"
+        return None, msg[:200]
+
+
 def bucket_versioning(bucket):
     """'Enabled' / 'Suspended' / None. On a versioned bucket a delete only adds a
     delete marker — the data (and its cost) stays until the version is purged."""
@@ -63,7 +82,10 @@ def bucket_versioning(bucket):
 
 
 def preview(bucket, prefix=None, keys=None):
-    rows = db.files_for_retention(bucket, prefix, keys)
+    return preview_rows(bucket, db.files_for_retention(bucket, prefix, keys), prefix)
+
+
+def preview_rows(bucket, rows, prefix=None):
     total = sum(int(r["size"] or 0) for r in rows)
     early = [r for r in rows if early_days(r) > 0]
     early_bytes = sum(int(r["size"] or 0) for r in early)

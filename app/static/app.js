@@ -40,7 +40,7 @@ function manifestBadge(state) {
 /* ---------- tabs ---------- */
 const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
                   restores: loadRestores, downloads: loadDownloads, notify: loadNotify,
-                  retention: loadRetention, logs: loadLogs };
+                  tree: loadTree, retention: loadRetention, logs: loadLogs };
 let activeTab = "dashboard";
 
 $$(".tab").forEach(b => b.onclick = () => {
@@ -790,6 +790,138 @@ $("#btnDownload").onclick = async () => {
   }
 };
 
+/* ---------- tree view ---------- */
+const trPrefixes = new Set();   // ticked folders (act on whole subtree)
+const trKeys = new Set();       // ticked individual files
+
+function trBucket() {
+  return ($("#bucketFilter") && $("#bucketFilter").value && $("#bucketFilter").value !== "*")
+    ? $("#bucketFilter").value : ($("#bucketBadge").dataset.bucket || "");
+}
+
+function trUpdateSel() {
+  const n = trPrefixes.size + trKeys.size;
+  $("#trSel").textContent = n
+    ? `${trPrefixes.size} folder(s) + ${trKeys.size} file(s) selected`
+    : "nothing selected";
+  $("#btnTrRestore").disabled = !n;
+  $("#btnTrDelete").disabled = !n || trCanDelete === false;
+}
+
+// a folder is covered if it or any ancestor prefix is ticked
+function trCovered(prefix) {
+  for (const p of trPrefixes) if (prefix === p || prefix.startsWith(p)) return true;
+  return false;
+}
+
+async function trRenderInto(el, prefix) {
+  el.innerHTML = `<div class="muted" style="padding:2px 0">loading…</div>`;
+  let d;
+  try {
+    d = await api(`/api/tree?bucket=${encodeURIComponent(trBucket())}&prefix=${encodeURIComponent(prefix)}`);
+  } catch (e) { el.innerHTML = `<div class="muted">✘ ${esc(e.message)}</div>`; return; }
+  if (!d.folders.length && !d.files.length) {
+    el.innerHTML = `<div class="muted" style="padding:2px 0">(empty)</div>`;
+    return;
+  }
+  el.innerHTML =
+    d.folders.map(f => `
+      <div class="node" data-prefix="${esc(f.prefix)}">
+        <span class="twisty" data-toggle="${esc(f.prefix)}">▸</span>
+        <input type="checkbox" class="trfolder" data-prefix="${esc(f.prefix)}"
+               ${trCovered(f.prefix) ? "checked" : ""} ${trCovered(f.prefix) && !trPrefixes.has(f.prefix) ? "disabled" : ""}>
+        <span class="fname" data-toggle="${esc(f.prefix)}">📁 ${esc(f.name.replace(/\/$/, ""))}</span>
+        <span class="meta">${f.count.toLocaleString()} file(s) · ${fmtBytes(f.bytes)}</span>
+      </div>
+      <div class="kids" data-kids="${esc(f.prefix)}" hidden></div>`).join("") +
+    d.files.map(f => `
+      <div class="node">
+        <span class="twisty"></span>
+        <input type="checkbox" class="trfile" data-key="${esc(f.key)}"
+               ${trKeys.has(f.key) || trCovered(f.key) ? "checked" : ""} ${trCovered(f.key) ? "disabled" : ""}>
+        <span class="leaf">📄 ${esc(f.name)}</span>
+        <span class="meta" title="${(f.size || 0).toLocaleString()} bytes">${fmtBytes(f.size)}</span>
+        ${chip(f.status)}${manifestBadge(f.manifest_state)}
+        ${f.expires_at ? `<span class="chip WARNING" title="scheduled for deletion">expires ${esc(f.expires_at.slice(0, 10))}</span>` : ""}
+      </div>`).join("");
+
+  el.querySelectorAll("[data-toggle]").forEach(t => t.onclick = async () => {
+    const p = t.dataset.toggle;
+    const kids = el.querySelector(`[data-kids="${CSS.escape(p)}"]`);
+    const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(p)}"]`);
+    if (!kids) return;
+    if (kids.hidden) {
+      kids.hidden = false; if (tw) tw.textContent = "▾";
+      if (!kids.dataset.loaded) { kids.dataset.loaded = "1"; await trRenderInto(kids, p); }
+    } else { kids.hidden = true; if (tw) tw.textContent = "▸"; }
+  });
+  el.querySelectorAll(".trfolder").forEach(cb => cb.onchange = () => {
+    cb.checked ? trPrefixes.add(cb.dataset.prefix) : trPrefixes.delete(cb.dataset.prefix);
+    trUpdateSel();
+    loadTree();   // re-render so descendants show as covered
+  });
+  el.querySelectorAll(".trfile").forEach(cb => cb.onchange = () => {
+    cb.checked ? trKeys.add(cb.dataset.key) : trKeys.delete(cb.dataset.key);
+    trUpdateSel();
+  });
+}
+
+let trCanDelete = null;
+async function loadTree() {
+  if (trCanDelete === null) {
+    try { trCanDelete = (await api(`/api/retention/permission?bucket=${encodeURIComponent(trBucket())}`)).can_delete; }
+    catch (e) { trCanDelete = null; }
+  }
+  trUpdateSel();
+  await trRenderInto($("#treeRoot"), "");
+}
+
+$("#btnTrClear").onclick = () => { trPrefixes.clear(); trKeys.clear(); trUpdateSel(); loadTree(); };
+
+$("#btnTrRestore").onclick = async () => {
+  const bucket = trBucket();
+  if (!confirm(`Request a ${$("#trTier").value} restore for ${trPrefixes.size} folder(s) and ${trKeys.size} file(s)?`)) return;
+  $("#trResult").textContent = "requesting restores…";
+  try {
+    const r = await api("/api/restore", { body: {
+      bucket, prefixes: [...trPrefixes], tier: $("#trTier").value, days: +$("#trDays").value,
+      items: [...trKeys].map(k => ({ bucket, key: k })),
+    }});
+    const failed = r.results.filter(x => !x.ok).length;
+    $("#trResult").innerHTML = failed
+      ? `<span style="color:var(--err)">requested ${r.results.length}, ${failed} failed — see Restores/Logs</span>`
+      : `<span style="color:var(--ok)">✔ restore requested for ${r.results.length} object(s)</span>`;
+  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+};
+
+$("#btnTrDelete").onclick = async () => {
+  const bucket = trBucket();
+  $("#trResult").textContent = "checking what that covers…";
+  let p;
+  try {
+    p = await api("/api/retention/preview", { body: { bucket, prefixes: [...trPrefixes], keys: [...trKeys] } });
+  } catch (e) { $("#trResult").textContent = "✘ " + e.message; return; }
+  let warn = `PERMANENTLY DELETE ${p.count} object(s) (${fmtBytes(p.bytes)}) from ${bucket}?`;
+  if (p.early_count) warn += `\n\n${p.early_count} are inside the ${p.min_days}-day minimum storage duration — you'll still be billed for up to ${p.max_early_days} more day(s).`;
+  if (p.versioning === "Enabled") warn += `\n\nBucket versioning is ENABLED: this adds delete markers; versions keep costing until purged.`;
+  warn += `\n\nThis cannot be undone.`;
+  if (!confirm(warn)) { $("#trResult").textContent = ""; return; }
+  const typed = prompt("Type the bucket name to confirm:", "");
+  if (typed === null) return;
+  $("#trResult").textContent = "deleting…";
+  try {
+    const r = await api("/api/retention/delete", { body: {
+      bucket, prefixes: [...trPrefixes], keys: [...trKeys],
+      confirm: typed.trim(), reason: "tree selection",
+    }});
+    $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ deleted ${r.deleted} object(s) · ${fmtBytes(r.bytes)}</span>`
+      + (r.failed ? ` <span style="color:var(--err)">· ${r.failed} failed</span>` : "")
+      + (r.early ? ` <span class="muted">· ${r.early} within the minimum duration (still billed)</span>` : "");
+    trPrefixes.clear(); trKeys.clear();
+    loadTree();
+  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+};
+
 /* ---------- retention / deletion ---------- */
 let rtLast = null;   // last preview, so delete acts on exactly what was shown
 
@@ -868,7 +1000,36 @@ $("#btnRtDelete").onclick = () => rtDelete({ due: false });
 $("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });
 $("#btnRtDueRefresh").onclick = () => loadRetention();
 
+async function loadRetentionPermission() {
+  const el = $("#rtPerm");
+  el.style.display = "";
+  el.innerHTML = `<div class="muted">checking delete permission…</div>`;
+  try {
+    const r = await api(`/api/retention/permission?bucket=${encodeURIComponent(rtBucket())}`);
+    trCanDelete = r.can_delete;
+    const dis = r.can_delete !== true;
+    $("#btnRtDelete").disabled = dis;
+    $("#btnRtDeleteDue").disabled = dis;
+    if (r.can_delete === true) {
+      el.innerHTML = `<div class="banner warn">⚠ This IAM user <b>CAN permanently delete</b> from
+        <code>${esc(r.bucket)}</code>. Deletions here are irreversible.</div>
+        <div class="muted" style="margin-top:6px">To make ColdVault strictly append-only, remove
+        <code>s3:DeleteObject</code> from the IAM policy — every other feature keeps working.</div>`;
+    } else if (r.can_delete === false) {
+      el.innerHTML = `<div class="banner ok">🔒 Append-only: this IAM user <b>cannot delete</b> from
+        <code>${esc(r.bucket)}</code>, so nothing here can remove your archive.</div>
+        <div class="muted" style="margin-top:6px">Scheduling expiry still works (it only flags what's due).
+        To enable deletion, grant <code>s3:DeleteObject</code> on <code>arn:aws:s3:::${esc(r.bucket)}/*</code>.</div>`;
+    } else {
+      el.innerHTML = `<div class="banner warn">Couldn't determine delete permission: ${esc(r.detail || "unknown")}</div>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="muted">permission check failed: ${esc(e.message)}</div>`;
+  }
+}
+
 async function loadRetention() {
+  loadRetentionPermission();
   try {
     const [due, del] = await Promise.all([
       api("/api/retention/due?bucket=" + encodeURIComponent(rtBucket())),
@@ -876,7 +1037,7 @@ async function loadRetention() {
     ]);
     $("#rtDueCount").textContent =
       `— ${due.due} due (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`;
-    $("#btnRtDeleteDue").disabled = due.due === 0;
+    $("#btnRtDeleteDue").disabled = due.due === 0 || trCanDelete !== true;
     $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr>
         <td class="key">${esc(i.key)}</td>
         <td class="num" title="${(i.size || 0).toLocaleString()} bytes">${fmtBytes(i.size)}</td>

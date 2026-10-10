@@ -46,6 +46,11 @@ if [[ "${ASSUME_YES}" != "true" ]]; then
     case "${reply}" in y|Y|yes|YES) ;; *) echo "Aborted."; exit 0 ;; esac
 fi
 
+echo "Stopping the auto-eject timer..."
+systemctl disable --now coldvault-eject.timer 2>/dev/null || true
+rm -f /etc/systemd/system/coldvault-eject.timer /etc/systemd/system/coldvault-eject.service \
+      /usr/local/sbin/coldvault-eject
+
 echo "Stopping any running mount instances..."
 mapfile -t UNITS < <(systemctl list-units --all --plain --no-legend \
     'coldvault-usb-mount@*.service' 2>/dev/null | awk '{print $1}' \

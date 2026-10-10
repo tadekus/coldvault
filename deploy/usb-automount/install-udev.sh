@@ -28,6 +28,10 @@ MOUNT_DST="/usr/local/sbin/coldvault-usb-mount"
 CLEAN_DST="/usr/local/sbin/coldvault-usb-clean"
 SERVICE_DST="/etc/systemd/system/coldvault-usb-mount@.service"
 RULES_DST="/etc/udev/rules.d/99-coldvault-usb.rules"
+EJECT_SRC="${SRC_DIR}/coldvault-eject.sh"
+EJECT_DST="/usr/local/sbin/coldvault-eject"
+EJECT_SVC="/etc/systemd/system/coldvault-eject.service"
+EJECT_TIMER="/etc/systemd/system/coldvault-eject.timer"
 
 for f in "${MOUNT_SRC}" "${CLEAN_SRC}" "${SERVICE_SRC}" "${RULES_SRC}"; do
     [[ -f "${f}" ]] || { echo "Missing: ${f}" >&2; exit 1; }
@@ -42,9 +46,22 @@ install -o root -g root -m 0644 "${SERVICE_SRC}" "${SERVICE_DST}"
 echo "Installing udev rule      -> ${RULES_DST}"
 install -o root -g root -m 0644 "${RULES_SRC}"   "${RULES_DST}"
 
+# --- auto-eject after a successful upload (optional but installed by default) ---
+if [[ -f "${EJECT_SRC}" ]]; then
+    echo "Installing eject helper    -> ${EJECT_DST}"
+    install -o root -g root -m 0755 "${EJECT_SRC}" "${EJECT_DST}"
+    install -o root -g root -m 0644 "${SRC_DIR}/coldvault-eject.service" "${EJECT_SVC}"
+    install -o root -g root -m 0644 "${SRC_DIR}/coldvault-eject.timer"   "${EJECT_TIMER}"
+fi
+
 echo "Reloading systemd and udev..."
 systemctl daemon-reload
 udevadm control --reload
+if [[ -f "${EJECT_TIMER}" ]]; then
+    systemctl enable --now coldvault-eject.timer >/dev/null 2>&1 \
+      && echo "  auto-eject timer enabled (polls every 30s)" \
+      || echo "  WARN could not enable coldvault-eject.timer"
+fi
 
 echo
 echo "Checking hot-plug prerequisites (warnings only):"

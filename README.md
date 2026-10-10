@@ -34,6 +34,15 @@ everything it does.
   restores. Deep Archive restores objects, not folders — the index is how you find the
   exact objects you need. The Index defaults to **newest-first** so a fresh upload
   shows at the top; switch to **Name A–Z** with the sort dropdown.
+- **Tree view** — browse the archive as a folder tree (expanded lazily, each folder
+  showing its subtree's file count and size) and act on a whole folder by ticking it:
+  restore everything inside it, or delete it.
+- **Retention with a visible safety net** — schedule expiry dates, preview exactly what
+  a deletion covers (including the Deep Archive 180-day minimum you'd still be billed
+  for), and delete with an audit trail. The app also *tells you* whether its IAM user
+  can delete at all, so an append-only setup is provable rather than assumed.
+- **Auto-eject** — optionally mark a canary drive as safe to unplug once its upload
+  finishes with zero failures; the host-side helper does the unmount.
 - **Offload manifest cross-check** — if a DIT/offload checksum manifest (Silverstack,
   YoYotta, …) sits in the source folder, ColdVault verifies each file against its
   recorded XXH64/MD5/SHA-256 hash during upload — catching corruption between offload
@@ -200,6 +209,24 @@ you can start uploads manually from the dashboard.
 > 180-day minimum storage charge per object (deleting earlier still bills the full
 > 180 days). When testing, use a drive containing only a small folder — or disable
 > auto-upload and use a manual upload instead.
+
+### Auto-eject when the upload is done
+
+With `COLDVAULT_EJECT_AFTER_UPLOAD=true`, a canary upload that finishes with **zero
+failed files** marks its drive as ready to unmount, so you can pull it without
+checking the UI first. A session with any failure is never flagged (the drive stays
+mounted and the log says why), and nothing is flagged while another upload is running
+from the same drive.
+
+A container cannot unmount a host filesystem, so ColdVault only *publishes* the
+request on `/api/eject/pending`. The host-side helper shipped with the udev package
+(`coldvault-eject` + a 30-second systemd timer, installed by
+`deploy/usb-automount/install-udev.sh`) polls it, unmounts, removes the empty mount
+point and reports the outcome back — logged in the app under the `eject` category.
+See [deploy/usb-automount/README.md](deploy/usb-automount/README.md).
+
+On macOS, or without the udev package, the flag is still visible on
+`/api/eject/pending` if you want to drive `diskutil eject` yourself.
 
 ### Hot-plug and mount propagation
 
@@ -446,6 +473,19 @@ as the download's SHA-256 check) and compares it to the offload value — the st
 confirmation that what came back from Deep Archive still matches what the DIT recorded.
 Results show as `csv✓` / `csv✗` in the Downloaded-files table.
 
+## Tree view
+
+The **Tree** tab shows the archive as a folder tree, expanded lazily so it stays fast
+on large buckets. Each folder reports its whole subtree's file count and size.
+
+Tick a **folder** to act on everything inside it, or tick individual files, then:
+
+- **Restore selected** — requests a Bulk/Standard restore for every object under the
+  selection (the prefix is expanded server-side, so a folder of thousands of clips is
+  one click, not thousands of checkboxes).
+- **Delete selected** — runs the same guarded flow as the Retention tab: a preview of
+  what it covers, the cost warnings, a confirmation, and typing the bucket name.
+
 ## Retention: expiry and deletion
 
 The **Retention** tab manages the end of an archive's life. Deleting is the only
@@ -475,9 +515,20 @@ archive can always answer *what was removed and why* — plus full logging under
 `retention` category. Deletions that fail (e.g. AccessDenied) are reported, leave the
 index row intact, and write no tombstone.
 
-> The IAM user needs `s3:DeleteObject` on the bucket's objects for this tab, and
-> `s3:GetBucketVersioning` for the versioning warning. If you'd rather ColdVault could
-> never delete, simply don't grant `s3:DeleteObject` — the rest of the app is unaffected.
+### Can ColdVault delete at all?
+
+The Retention tab **tells you**, rather than leaving it to your memory of the IAM
+policy. On open it probes the permission — a no-op `delete-object` on a random key under
+a reserved prefix, which is idempotent and removes nothing — and shows one of:
+
+- 🔒 **Append-only** — the IAM user has no `s3:DeleteObject`, so nothing in ColdVault can
+  remove your archive. The delete buttons are disabled. Scheduling expiry still works
+  (it only flags what's due).
+- ⚠ **This IAM user CAN permanently delete** — deletion is live and irreversible.
+
+To make ColdVault strictly append-only, simply **don't grant `s3:DeleteObject`** — every
+other feature keeps working. Grant it (plus `s3:GetBucketVersioning` for the versioning
+warning) only when you actually want retention enforcement.
 
 ## Integrity audit
 

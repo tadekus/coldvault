@@ -4,6 +4,25 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.11.0
+
+- **Tree tab** — browse the archive as a lazily-expanded folder tree, with each folder
+  showing its whole subtree's file count and size. Tick a **folder** to act on
+  everything inside it (or tick individual files), then **Restore selected** or
+  **Delete selected**. Restore and retention both accept prefixes, so a ticked folder
+  expands server-side instead of shipping thousands of keys.
+- **Delete permission is now visible in the app.** The Retention and Tree tabs probe
+  whether the IAM user actually has `s3:DeleteObject` (a no-op delete of a random key
+  under a reserved prefix — idempotent, removes nothing) and show either a green
+  *“Append-only: this IAM user cannot delete”* banner or an amber *“CAN permanently
+  delete”* warning. Delete buttons are disabled when the permission is absent.
+- **Auto-eject after a successful upload** (`COLDVAULT_EJECT_AFTER_UPLOAD=true`). A
+  canary upload that finishes with **zero failures** flags its drive as ready to
+  unmount; a new host-side helper (`coldvault-eject` + systemd timer, installed by
+  `deploy/usb-automount/install-udev.sh`) polls `/api/eject/pending`, unmounts, and
+  reports back. A session with any failure is never flagged, and the log says why.
+  The container never unmounts host filesystems itself.
+
 ## 1.10.0
 
 - **Retention tab** — manage expiry and deletion of archived folders and files.

@@ -478,6 +478,46 @@ def get_file_by_id(file_id):
     return _row("SELECT * FROM files WHERE id=?", (file_id,))
 
 
+# ---- tree browsing ----
+
+def _esc_like(s):
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def tree_children(bucket, prefix="", file_limit=1000):
+    """Immediate children of a key prefix: sub-folders (with aggregate counts and
+    sizes for the whole subtree) and the files sitting directly at this level."""
+    plen = len(prefix)
+    like = f"{_esc_like(prefix)}%"
+    folders = _rows(
+        "SELECT substr(k, 1, instr(k, '/')) AS name, COUNT(*) c, "
+        "       COALESCE(SUM(size),0) b "
+        "FROM (SELECT substr(key, ?+1) AS k, size FROM files "
+        "      WHERE bucket=? AND key LIKE ? ESCAPE '\\') "
+        "WHERE instr(k, '/') > 0 GROUP BY name ORDER BY name",
+        (plen, bucket, like))
+    files = _rows(
+        "SELECT * FROM files WHERE bucket=? AND key LIKE ? ESCAPE '\\' "
+        "AND instr(substr(key, ?+1), '/') = 0 ORDER BY key LIMIT ?",
+        (bucket, like, plen, file_limit))
+    return folders, files
+
+
+def keys_under(bucket, prefixes=None, keys=None, limit=200000):
+    """All index rows covered by a set of prefixes and/or explicit keys."""
+    clauses, params = [], []
+    for p in (prefixes or []):
+        clauses.append("key LIKE ? ESCAPE '\\'")
+        params.append(f"{_esc_like(p)}%")
+    if keys:
+        clauses.append(f"key IN ({','.join('?' * len(keys))})")
+        params += list(keys)
+    if not clauses:
+        return []
+    return _rows(f"SELECT * FROM files WHERE bucket=? AND ({' OR '.join(clauses)}) "
+                 f"ORDER BY key LIMIT ?", [bucket] + params + [limit])
+
+
 # ---- retention / deletion ----
 
 def files_for_retention(bucket, prefix=None, keys=None, limit=100000):

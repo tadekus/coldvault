@@ -1,0 +1,9 @@
+[Unit]
+Description=Unmount drives ColdVault has finished uploading
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/coldvault-eject
+User=root
+# Point at a non-default API address if ColdVault isn't on localhost:9999
+# Environment=COLDVAULT_API=http://127.0.0.1:9999

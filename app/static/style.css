@@ -84,6 +84,17 @@ button.danger { background: #3a1f1c; color: var(--err); border-color: #5a2a24; }
 }
 .dropzone.over { border-color: var(--accent); background: var(--accent-dim); }
 .dropzone a { color: var(--accent); }
+.tree { font-size: 13px; }
+.tree .node { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.tree .node:hover { background: var(--panel2); }
+.tree .twisty { width: 14px; text-align: center; cursor: pointer; color: var(--muted); user-select: none; }
+.tree .fname { cursor: pointer; color: var(--accent); }
+.tree .leaf { font-family: ui-monospace, monospace; font-size: 12px; }
+.tree .meta { color: var(--muted); font-size: 11px; }
+.tree .kids { margin-left: 18px; border-left: 1px solid var(--border); padding-left: 8px; }
+.banner { padding: 10px 14px; border-radius: 8px; font-weight: 600; }
+.banner.ok { background: #16351f; color: #cdeedb; }
+.banner.warn { background: #3a2a17; color: #f0d9a8; }
 button:disabled { opacity: .5; cursor: default; }
 
 .browse { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

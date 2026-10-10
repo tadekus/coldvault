@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll ColdVault for drives finished uploading and unmount them
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
