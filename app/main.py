@@ -1,6 +1,7 @@
 import os
 import tempfile
 import time
+from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
 
@@ -14,6 +15,7 @@ import editlist
 import manifest
 import manifest_verify
 import restore
+import retention
 import uploader as uploader_mod
 import version
 import watcher as watcher_mod
@@ -443,6 +445,99 @@ def api_manifest_verify():
 @app.get("/api/manifest/jobs")
 def api_manifest_jobs():
     return jsonify(manifest_verify.jobs())
+
+
+def _retention_rows(data, bucket):
+    """Resolve a request body to index rows: explicit keys, or a key prefix."""
+    keys = data.get("keys") or None
+    prefix = (data.get("prefix") or "").strip() or None
+    if not keys and not prefix:
+        return None, "give either keys[] or a prefix"
+    return db.files_for_retention(bucket, prefix, keys), None
+
+
+@app.post("/api/retention/preview")
+def api_retention_preview():
+    """What would be affected: count, bytes, early-deletion exposure, versioning."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    prefix = (data.get("prefix") or "").strip() or None
+    keys = data.get("keys") or None
+    if not keys and prefix is None:
+        return jsonify({"error": "give either keys[] or a prefix"}), 400
+    return jsonify(retention.preview(bucket, prefix, keys))
+
+
+@app.post("/api/retention/expiry")
+def api_retention_expiry():
+    """Set (or clear, with date=null) the planned deletion date. Never deletes."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    when = (data.get("date") or "").strip() or None
+    if when:
+        try:
+            datetime.strptime(when, "%Y-%m-%d")
+            when = f"{when} 00:00:00"
+        except ValueError:
+            return jsonify({"error": "date must be YYYY-MM-DD (or null to clear)"}), 400
+    rows, err = _retention_rows(data, bucket)
+    if err:
+        return jsonify({"error": err}), 400
+    n = db.set_expiry(bucket, [r["key"] for r in rows], when)
+    log_event("INFO", "retention",
+              f"expiry {'set to ' + when if when else 'cleared'} for {n} object(s) "
+              f"in s3://{bucket}" + (f" under '{data.get('prefix')}'" if data.get("prefix") else ""))
+    return jsonify({"updated": n, "expires_at": when})
+
+
+@app.get("/api/retention/due")
+def api_retention_due():
+    bucket = request.args.get("bucket") or config.BUCKET
+    rows = db.files_due(bucket, db.now())
+    sched_count, sched_bytes = db.count_scheduled(bucket)
+    return jsonify({
+        "bucket": bucket, "due": len(rows),
+        "due_bytes": sum(int(r["size"] or 0) for r in rows),
+        "scheduled": sched_count, "scheduled_bytes": sched_bytes,
+        "items": [{"key": r["key"], "size": r["size"], "expires_at": r["expires_at"],
+                   "uploaded_at": r["uploaded_at"], "early_days": retention.early_days(r)}
+                  for r in rows[:500]],
+    })
+
+
+@app.post("/api/retention/delete")
+def api_retention_delete():
+    """PERMANENTLY delete objects from S3 and the index. Requires the bucket name
+    as a typed confirmation. Writes a tombstone + log line for every object."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    if (data.get("confirm") or "").strip() != bucket:
+        return jsonify({"error": f"confirmation must equal the bucket name '{bucket}'"}), 400
+    mode = "expiry" if data.get("due") else "manual"
+    if data.get("due"):
+        rows = db.files_due(bucket, db.now())
+    else:
+        rows, err = _retention_rows(data, bucket)
+        if err:
+            return jsonify({"error": err}), 400
+    if not rows:
+        return jsonify({"error": "nothing matched — refusing to delete"}), 400
+    try:
+        rep = retention.delete(bucket, rows, (data.get("reason") or "").strip(), mode)
+    except AwsError as e:
+        return jsonify({"error": str(e)[:500]}), 502
+    return jsonify(rep)
+
+
+@app.get("/api/deletions")
+def api_deletions():
+    bucket = request.args.get("bucket")
+    if bucket == "*":
+        bucket = None
+    elif not bucket:
+        bucket = config.BUCKET
+    return jsonify({"items": db.list_deletions(bucket),
+                    "totals": db.deletion_totals(bucket)})
 
 
 @app.get("/api/sessions")

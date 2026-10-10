@@ -16,6 +16,7 @@
     <button class="tab" data-tab="sessions">Sessions</button>
     <button class="tab" data-tab="restores">Restores</button>
     <button class="tab" data-tab="downloads">Downloads</button>
+    <button class="tab" data-tab="retention">Retention</button>
     <button class="tab" data-tab="logs">Logs</button>
     <button class="tab tab-right" data-tab="notify">✉ Notifications</button>
   </nav>
@@ -257,7 +258,8 @@
     <select id="logCategory">
       <option value="">all categories</option>
       <option>upload</option><option>download</option><option>watcher</option>
-      <option>restore</option><option>audit</option><option>manifest</option><option>editlist</option>
+      <option>restore</option><option>audit</option><option>manifest</option>
+      <option>retention</option><option>editlist</option>
       <option>aws</option><option>app</option>
     </select>
     <input id="logSearch" placeholder="filter…" style="flex:1">
@@ -267,6 +269,71 @@
   <div class="tablewrap">
     <table id="logsTable">
       <thead><tr><th>Time (local)</th><th>Level</th><th>Cat</th><th>Message</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= RETENTION ================= -->
+<section id="tab-retention" class="panel">
+  <div class="box">
+    <h3>Select objects</h3>
+    <div class="row">
+      <input id="rtPrefix" placeholder="key prefix — e.g. SSD15/SD01_20261005_MON/  (a folder in the archive)" style="flex:3">
+      <button id="btnRtPreview">Preview</button>
+    </div>
+    <div id="rtPreview" class="muted"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="box">
+      <h4>Schedule expiry</h4>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">
+        Marks a planned deletion date. Nothing is ever deleted automatically —
+        due items appear below for you to action.
+      </div>
+      <div class="row">
+        <input id="rtDate" type="date" style="flex:1">
+        <button id="btnRtSetExpiry" class="secondary">Set expiry</button>
+        <button id="btnRtClearExpiry" class="secondary">Clear expiry</button>
+      </div>
+      <div id="rtExpiryResult" class="muted"></div>
+    </div>
+
+    <div class="box">
+      <h4>Delete permanently</h4>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">
+        Removes the objects from S3 and the index. <b>This cannot be undone.</b>
+        Every deletion is recorded in the log below.
+      </div>
+      <div class="row">
+        <input id="rtReason" placeholder="reason (recorded in the audit log)" style="flex:2">
+        <button id="btnRtDelete" class="danger">Delete previewed…</button>
+      </div>
+      <div id="rtDeleteResult" class="muted"></div>
+    </div>
+  </div>
+
+  <div class="box">
+    <h3>Due for expiry <span id="rtDueCount" class="muted"></span></h3>
+    <div class="row">
+      <button id="btnRtDueRefresh" class="secondary">Refresh</button>
+      <button id="btnRtDeleteDue" class="danger">Delete all due…</button>
+      <span id="rtDueResult" class="muted"></span>
+    </div>
+    <div class="tablewrap">
+      <table id="rtDueTable">
+        <thead><tr><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th><th>Early-delete</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h3 style="margin:18px 0 8px">Deletion log <span id="rtDelTotals" class="muted"></span></h3>
+  <div class="tablewrap">
+    <table id="rtDeletionsTable">
+      <thead><tr><th>Deleted at</th><th>Bucket</th><th>Key</th><th>Size</th>
+        <th>Uploaded</th><th>Mode</th><th>Reason</th><th>Early</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>

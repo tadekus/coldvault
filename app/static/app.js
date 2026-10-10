@@ -40,7 +40,7 @@ function manifestBadge(state) {
 /* ---------- tabs ---------- */
 const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
                   restores: loadRestores, downloads: loadDownloads, notify: loadNotify,
-                  logs: loadLogs };
+                  retention: loadRetention, logs: loadLogs };
 let activeTab = "dashboard";
 
 $$(".tab").forEach(b => b.onclick = () => {
@@ -789,6 +789,118 @@ $("#btnDownload").onclick = async () => {
     alert("✘ " + e.message);
   }
 };
+
+/* ---------- retention / deletion ---------- */
+let rtLast = null;   // last preview, so delete acts on exactly what was shown
+
+function rtBucket() { return $("#bucketFilter").value && $("#bucketFilter").value !== "*"
+  ? $("#bucketFilter").value : ($("#bucketBadge").dataset.bucket || ""); }
+
+function rtBody(extra) {
+  return Object.assign({ bucket: rtBucket(), prefix: $("#rtPrefix").value.trim() }, extra || {});
+}
+
+$("#btnRtPreview").onclick = async () => {
+  $("#rtPreview").textContent = "checking…";
+  try {
+    const r = await api("/api/retention/preview", { body: rtBody() });
+    rtLast = r;
+    let h = `<b>${r.count.toLocaleString()}</b> object(s) · <b>${fmtBytes(r.bytes)}</b> under ` +
+            `<code>${esc(r.prefix || "(whole bucket)")}</code> in <code>${esc(r.bucket)}</code>`;
+    if (r.early_count) h += `<br><span style="color:var(--warn)">⚠ ${r.early_count} object(s) ` +
+      `(${fmtBytes(r.early_bytes)}) are younger than the ${r.min_days}-day minimum storage ` +
+      `duration — deleting them now still bills up to ${r.max_early_days} more day(s).</span>`;
+    if (r.versioning === "Enabled") h += `<br><span style="color:var(--warn)">⚠ bucket versioning is ` +
+      `ENABLED — deleting adds a delete marker; old versions keep costing until purged.</span>`;
+    if (r.sample.length) h += `<div class="mono" style="font-size:11px;margin-top:6px">` +
+      r.sample.slice(0, 15).map(s => esc(s.key)).join("<br>") +
+      (r.count > 15 ? `<br>… and ${(r.count - 15).toLocaleString()} more` : "") + `</div>`;
+    $("#rtPreview").innerHTML = h;
+  } catch (e) { rtLast = null; $("#rtPreview").textContent = "✘ " + e.message; }
+};
+
+async function rtSetExpiry(date) {
+  if (!$("#rtPrefix").value.trim()) return alert("Enter a prefix first (then Preview to check it)");
+  $("#rtExpiryResult").textContent = "applying…";
+  try {
+    const r = await api("/api/retention/expiry", { body: rtBody({ date }) });
+    $("#rtExpiryResult").textContent = `✔ ${r.updated} object(s) — expiry ${r.expires_at || "cleared"}`;
+    loadRetention();
+  } catch (e) { $("#rtExpiryResult").textContent = "✘ " + e.message; }
+}
+$("#btnRtSetExpiry").onclick = () => {
+  const d = $("#rtDate").value;
+  if (!d) return alert("Pick a date");
+  rtSetExpiry(d);
+};
+$("#btnRtClearExpiry").onclick = () => rtSetExpiry(null);
+
+async function rtDelete({ due }) {
+  const bucket = rtBucket();
+  const what = due
+    ? `every object currently DUE for expiry in ${bucket}`
+    : (rtLast ? `${rtLast.count} object(s) (${fmtBytes(rtLast.bytes)}) under "${rtLast.prefix || "(whole bucket)"}"` : null);
+  if (!due && !rtLast) return alert("Preview first — delete acts on exactly what the preview showed");
+  if (!due && rtLast.count === 0) return alert("The preview matched nothing");
+  const early = !due && rtLast.early_count
+    ? `\n\n${rtLast.early_count} of them are inside the ${rtLast.min_days}-day minimum storage duration, so you will still be billed for up to ${rtLast.max_early_days} more day(s).` : "";
+  if (!confirm(`PERMANENTLY DELETE ${what} from S3?${early}\n\nThis cannot be undone.`)) return;
+  const typed = prompt(`This is irreversible.\n\nType the bucket name to confirm:`, "");
+  if (typed === null) return;
+  const el = due ? $("#rtDueResult") : $("#rtDeleteResult");
+  el.textContent = "deleting…";
+  try {
+    const body = due
+      ? { bucket, due: true, confirm: typed.trim(), reason: $("#rtReason").value.trim() }
+      : rtBody({ confirm: typed.trim(), reason: $("#rtReason").value.trim() });
+    const r = await api("/api/retention/delete", { body });
+    let msg = `✔ deleted ${r.deleted} object(s) · ${fmtBytes(r.bytes)} freed`;
+    if (r.early) msg += ` · ${r.early} within the minimum duration (still billed)`;
+    if (r.failed) msg += ` · ✘ ${r.failed} failed`;
+    if (r.versioning === "Enabled") msg += " · versioning on: delete markers added, versions remain";
+    el.textContent = msg;
+    rtLast = null;
+    loadRetention();
+    if (activeTab === "files") loadFiles();
+  } catch (e) { el.textContent = "✘ " + e.message; }
+}
+$("#btnRtDelete").onclick = () => rtDelete({ due: false });
+$("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });
+$("#btnRtDueRefresh").onclick = () => loadRetention();
+
+async function loadRetention() {
+  try {
+    const [due, del] = await Promise.all([
+      api("/api/retention/due?bucket=" + encodeURIComponent(rtBucket())),
+      api("/api/deletions?bucket=" + encodeURIComponent(rtBucket())),
+    ]);
+    $("#rtDueCount").textContent =
+      `— ${due.due} due (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`;
+    $("#btnRtDeleteDue").disabled = due.due === 0;
+    $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr>
+        <td class="key">${esc(i.key)}</td>
+        <td class="num" title="${(i.size || 0).toLocaleString()} bytes">${fmtBytes(i.size)}</td>
+        <td class="mono">${esc(i.uploaded_at || "—")}</td>
+        <td class="mono">${esc(i.expires_at || "—")}</td>
+        <td class="num">${i.early_days ? `<span style="color:var(--warn)">${i.early_days}d billed</span>` : "—"}</td>
+      </tr>`).join("") || `<tr><td colspan="5" class="muted" style="padding:20px">nothing due — schedule an expiry above</td></tr>`;
+
+    const t = del.totals;
+    $("#rtDelTotals").textContent = `— ${t.count} object(s), ${fmtBytes(t.bytes)} removed${t.early ? `, ${t.early} early` : ""}`;
+    $("#rtDeletionsTable tbody").innerHTML = del.items.map(d => `<tr>
+        <td class="mono">${esc(d.deleted_at || "")}</td>
+        <td class="mono">${esc(d.bucket || "")}</td>
+        <td class="key">${esc(d.key)}</td>
+        <td class="num" title="${(d.size || 0).toLocaleString()} bytes">${fmtBytes(d.size)}</td>
+        <td class="mono">${esc(d.uploaded_at || "—")}</td>
+        <td>${chip(d.mode)}</td>
+        <td>${esc(d.reason || "—")}</td>
+        <td class="num">${d.early_days ? `<span style="color:var(--warn)">${d.early_days}d</span>` : "—"}</td>
+      </tr>`).join("") || `<tr><td colspan="8" class="muted" style="padding:20px">nothing has been deleted</td></tr>`;
+  } catch (e) {
+    $("#rtDueCount").textContent = "— error: " + e.message;
+  }
+}
 
 /* ---------- logs ---------- */
 async function loadLogs() {

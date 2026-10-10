@@ -446,6 +446,39 @@ as the download's SHA-256 check) and compares it to the offload value — the st
 confirmation that what came back from Deep Archive still matches what the DIT recorded.
 Results show as `csv✓` / `csv✗` in the Downloaded-files table.
 
+## Retention: expiry and deletion
+
+The **Retention** tab manages the end of an archive's life. Deleting is the only
+irreversible thing ColdVault does, so it is deliberately a three-step flow.
+
+1. **Select and preview.** Enter a key prefix — a folder in the archive, e.g.
+   `SSD15/SD01_20261005_MON/CAMERA_FILES/` — and press **Preview**. You get the exact
+   object count and total size, a sample of the keys, and two cost warnings where they
+   apply:
+   - **Minimum storage duration.** Deep Archive bills a minimum of **180 days** per
+     object (Glacier 90, IA 30). Deleting sooner does *not* save money — you are still
+     charged the remaining days. The preview says how many objects are affected and for
+     how many more days.
+   - **Bucket versioning.** If versioning is enabled, a delete only writes a delete
+     marker: the object versions, and their cost, remain until purged.
+2. **Schedule expiry (optional).** Set a planned deletion date on the previewed set, or
+   clear it. **Nothing is ever deleted automatically** — scheduled objects simply appear
+   under **Due for expiry** when their date passes, for you to action.
+3. **Delete.** Either **Delete previewed…** or **Delete all due…**. Both require
+   confirming the summary and then typing the bucket name. An empty match is refused, so
+   a mistyped prefix can't turn into a mass delete.
+
+Every deletion is **audited twice**: a tombstone row in the `deletions` table recording
+the key, size, SHA-256, manifest hash, upload date, reason, mode (manual/expiry) and how
+many days short of the minimum duration it was — this outlives the index entry, so the
+archive can always answer *what was removed and why* — plus full logging under the
+`retention` category. Deletions that fail (e.g. AccessDenied) are reported, leave the
+index row intact, and write no tombstone.
+
+> The IAM user needs `s3:DeleteObject` on the bucket's objects for this tab, and
+> `s3:GetBucketVersioning` for the versioning warning. If you'd rather ColdVault could
+> never delete, simply don't grant `s3:DeleteObject` — the rest of the app is unaffected.
+
 ## Integrity audit
 
 Uploads are checksum-verified when they happen, but for cold storage it's worth
@@ -543,7 +576,9 @@ or just divide it.
 - The IAM user needs: `s3:ListAllMyBuckets` (bucket picker), `s3:ListBucket` on the
   bucket, and `s3:PutObject`, `s3:GetObject`, `s3:RestoreObject`,
   `s3:AbortMultipartUpload` on the bucket's objects, plus `sts:GetCallerIdentity`
-  for the connection test.
+  for the connection test. The Retention tab additionally needs `s3:DeleteObject`
+  (and `s3:GetBucketVersioning` for its versioning warning) — withhold
+  `s3:DeleteObject` if you want ColdVault to be strictly append-only.
 - `COLDVAULT_BUCKET` in `.env` is the initial bucket. You can also click
   **List buckets** on the dashboard and pick one there — that choice is persisted in
   `./data` and overrides the `.env` value until you pick another.
