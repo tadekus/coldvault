@@ -1,4 +1,6 @@
 flask>=3.0
+openpyxl>=3.1
 pyaaf2>=1.7
+reportlab>=4.0
 xxhash>=3.0
 

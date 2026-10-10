@@ -3,7 +3,7 @@ import tempfile
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 import audit as audit_mod
 import awsapi
@@ -16,6 +16,7 @@ import manifest
 import manifest_verify
 import restore
 import retention
+import treeexport
 import uploader as uploader_mod
 import version
 import watcher as watcher_mod
@@ -512,6 +513,28 @@ def api_tree():
         "files": [{"key": f["key"], "name": f["key"][len(prefix):], "size": f["size"],
                    "status": f["status"], "manifest_state": f["manifest_state"],
                    "expires_at": f["expires_at"]} for f in files],
+    })
+
+
+@app.get("/api/tree/export")
+def api_tree_export():
+    """Download the whole tree (folders with subtree sizes, plus every file and
+    the totals) as Excel, PDF or CSV. Index-only, so no AWS calls."""
+    bucket = request.args.get("bucket") or config.BUCKET
+    prefix = request.args.get("prefix") or ""
+    fmt = (request.args.get("format") or "xlsx").lower()
+    try:
+        blob, name, mime = treeexport.build(bucket, prefix, fmt)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:          # optional dependency missing
+        log_event("ERROR", "app", f"tree export ({fmt}) unavailable: {e}")
+        return jsonify({"error": str(e)}), 501
+    log_event("INFO", "app", f"tree exported as {fmt}: s3://{bucket}"
+                             + (f"/{prefix}" if prefix else "") + f" -> {name}")
+    return Response(blob, mimetype=mime, headers={
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Content-Length": str(len(blob)),
     })
 
 

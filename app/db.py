@@ -503,6 +503,16 @@ def tree_children(bucket, prefix="", file_limit=1000):
     return folders, files
 
 
+def files_for_export(bucket, prefix="", limit=500000):
+    """Every indexed object under a prefix, key-ordered — the input for the
+    tree export's folder roll-up."""
+    return _rows(
+        "SELECT key, size, status, storage_class, uploaded_at, verified_at, "
+        "       sha256, manifest_state, expires_at "
+        "FROM files WHERE bucket=? AND key LIKE ? ESCAPE '\\' ORDER BY key LIMIT ?",
+        (bucket, f"{_esc_like(prefix)}%", limit))
+
+
 def keys_under(bucket, prefixes=None, keys=None, limit=200000):
     """All index rows covered by a set of prefixes and/or explicit keys."""
     clauses, params = [], []

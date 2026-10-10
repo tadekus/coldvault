@@ -478,13 +478,35 @@ Results show as `csv✓` / `csv✗` in the Downloaded-files table.
 The **Tree** tab shows the archive as a folder tree, expanded lazily so it stays fast
 on large buckets. Each folder reports its whole subtree's file count and size.
 
+Open folders stay open while you work — ticking, scheduling or refreshing never
+collapses the tree or moves you off your place.
+
 Tick a **folder** to act on everything inside it, or tick individual files, then:
 
 - **Restore selected** — requests a Bulk/Standard restore for every object under the
   selection (the prefix is expanded server-side, so a folder of thousands of clips is
   one click, not thousands of checkboxes).
+- **Set / Clear expiry** — schedules a planned deletion date for the selection, the
+  same mechanism as the Retention tab. Scheduling never deletes: due items are listed
+  in **Retention** for you to action deliberately.
 - **Delete selected** — runs the same guarded flow as the Retention tab: a preview of
   what it covers, the cost warnings, a confirmation, and typing the bucket name.
+
+### Exporting the tree
+
+**Excel**, **PDF** and **CSV** buttons export the whole bucket's tree — every folder
+with its subtree's file count and size, plus the grand totals — stamped with the
+bucket name and the local date and time, so a filed or printed copy is
+self-describing. The export covers the bucket, not just what you've ticked.
+
+| Format | Contents |
+|--------|----------|
+| **Excel** (`.xlsx`) | *Tree* sheet: folders indented by depth, with files, exact bytes and a human size, ending in a TOTAL row. *Files* sheet: every object (key, size, status, storage class, uploaded/verified, SHA-256, manifest state, expiry) with filters on. |
+| **PDF** | Paginated, indented report with a header block and per-page footer — for printing, filing or sending to a client. |
+| **CSV** | Meta block, the folder roll-up, totals, then every object. UTF-8 with a BOM so Excel opens it cleanly. |
+
+Exports read the local index only — no AWS calls, nothing is restored, and Deep
+Archive objects stay cold.
 
 ## Retention: expiry and deletion
 

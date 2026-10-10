@@ -793,6 +793,7 @@ $("#btnDownload").onclick = async () => {
 /* ---------- tree view ---------- */
 const trPrefixes = new Set();   // ticked folders (act on whole subtree)
 const trKeys = new Set();       // ticked individual files
+const trOpen = new Set();       // expanded folders — survives re-renders
 
 function trBucket() {
   return ($("#bucketFilter") && $("#bucketFilter").value && $("#bucketFilter").value !== "*")
@@ -812,6 +813,30 @@ function trUpdateSel() {
 function trCovered(prefix) {
   for (const p of trPrefixes) if (prefix === p || prefix.startsWith(p)) return true;
   return false;
+}
+
+// Reflect the selection on the checkboxes already in the DOM, so ticking a
+// folder doesn't need a re-render (which used to collapse the whole tree).
+function trSyncChecks() {
+  $("#treeRoot").querySelectorAll(".trfolder").forEach(cb => {
+    const p = cb.dataset.prefix, cov = trCovered(p);
+    cb.checked = cov;
+    cb.disabled = cov && !trPrefixes.has(p);   // covered by an ancestor
+  });
+  $("#treeRoot").querySelectorAll(".trfile").forEach(cb => {
+    const cov = trCovered(cb.dataset.key);
+    cb.checked = cov || trKeys.has(cb.dataset.key);
+    cb.disabled = cov;
+  });
+}
+
+async function trExpand(el, prefix) {
+  const kids = el.querySelector(`[data-kids="${CSS.escape(prefix)}"]`);
+  const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(prefix)}"]`);
+  if (!kids) return;
+  kids.hidden = false;
+  if (tw) tw.textContent = "▾";
+  if (!kids.dataset.loaded) { kids.dataset.loaded = "1"; await trRenderInto(kids, prefix); }
 }
 
 async function trRenderInto(el, prefix) {
@@ -851,19 +876,26 @@ async function trRenderInto(el, prefix) {
     const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(p)}"]`);
     if (!kids) return;
     if (kids.hidden) {
-      kids.hidden = false; if (tw) tw.textContent = "▾";
-      if (!kids.dataset.loaded) { kids.dataset.loaded = "1"; await trRenderInto(kids, p); }
-    } else { kids.hidden = true; if (tw) tw.textContent = "▸"; }
+      trOpen.add(p);
+      await trExpand(el, p);
+    } else {
+      // keep descendants in trOpen so re-expanding restores the deeper state
+      trOpen.delete(p);
+      kids.hidden = true; if (tw) tw.textContent = "▸";
+    }
   });
   el.querySelectorAll(".trfolder").forEach(cb => cb.onchange = () => {
     cb.checked ? trPrefixes.add(cb.dataset.prefix) : trPrefixes.delete(cb.dataset.prefix);
     trUpdateSel();
-    loadTree();   // re-render so descendants show as covered
+    trSyncChecks();   // mark descendants as covered, in place — no re-render
   });
   el.querySelectorAll(".trfile").forEach(cb => cb.onchange = () => {
     cb.checked ? trKeys.add(cb.dataset.key) : trKeys.delete(cb.dataset.key);
     trUpdateSel();
   });
+
+  // restore whatever the user had open at this level
+  for (const f of d.folders) if (trOpen.has(f.prefix)) await trExpand(el, f.prefix);
 }
 
 let trCanDelete = null;
@@ -873,10 +905,14 @@ async function loadTree() {
     catch (e) { trCanDelete = null; }
   }
   trUpdateSel();
+  const y = window.scrollY;
   await trRenderInto($("#treeRoot"), "");
+  window.scrollTo({ top: y });   // a refresh shouldn't move you off your place
 }
 
-$("#btnTrClear").onclick = () => { trPrefixes.clear(); trKeys.clear(); trUpdateSel(); loadTree(); };
+$("#btnTrClear").onclick = () => {
+  trPrefixes.clear(); trKeys.clear(); trUpdateSel(); trSyncChecks();
+};
 
 $("#btnTrRestore").onclick = async () => {
   const bucket = trBucket();
@@ -893,6 +929,58 @@ $("#btnTrRestore").onclick = async () => {
       : `<span style="color:var(--ok)">✔ restore requested for ${r.results.length} object(s)</span>`;
   } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
 };
+
+async function trExpiry(date) {
+  const bucket = trBucket();
+  if (!trPrefixes.size && !trKeys.size) return alert("Tick a folder or some files first");
+  $("#trResult").textContent = date ? "scheduling expiry…" : "clearing expiry…";
+  try {
+    const r = await api("/api/retention/expiry", { body: {
+      bucket, prefixes: [...trPrefixes], keys: [...trKeys], date,
+    }});
+    $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ expiry ${
+      date ? "set to " + esc(date) : "cleared"} for ${r.updated.toLocaleString()} object(s)</span>`
+      + ` <span class="muted">· nothing is deleted automatically — due items are listed in Retention</span>`;
+    loadTree();
+  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+}
+
+$("#btnTrExpiry").onclick = () => {
+  const d = $("#trExpDate").value;
+  if (!d) return alert("Pick a date first");
+  trExpiry(d);
+};
+$("#btnTrExpiryClear").onclick = () => trExpiry(null);
+
+// Fetched rather than navigated to, so a missing optional dependency (or any
+// other error) shows up here instead of replacing the page with JSON.
+async function trExport(fmt) {
+  const q = new URLSearchParams({ bucket: trBucket(), format: fmt });
+  $("#trResult").innerHTML = `<span class="muted">building the ${fmt.toUpperCase()} export…</span>`;
+  try {
+    const res = await fetch("/api/tree/export?" + q.toString());
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).error || msg; } catch (_) { /* not JSON */ }
+      throw new Error(msg);
+    }
+    const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = m ? m[1] : `coldvault-tree.${fmt}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    $("#trResult").innerHTML =
+      `<span style="color:var(--ok)">✔ ${esc(a.download)} · ${fmtBytes(blob.size)}</span>`;
+  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+}
+$("#btnTrXlsx").onclick = () => trExport("xlsx");
+$("#btnTrPdf").onclick = () => trExport("pdf");
+$("#btnTrCsv").onclick = () => trExport("csv");
 
 $("#btnTrDelete").onclick = async () => {
   const bucket = trBucket();

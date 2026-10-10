@@ -4,6 +4,24 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.12.0
+
+- **The tree no longer collapses when you tick something.** Ticking a folder used
+  to re-render from the root, losing every open folder; the selection is now
+  applied to the checkboxes in place. Open folders are also remembered across a
+  genuine refresh (after a delete, say) and the page keeps its scroll position, so
+  you stay where you were working.
+- **Schedule expiry straight from the Tree tab** — pick a date and set or clear it
+  for whole ticked folders (or individual files), alongside Restore and Delete.
+  As in the Retention tab this only schedules: nothing is ever deleted
+  automatically, and due items are listed there for a deliberate deletion.
+- **Export the tree as Excel, PDF or CSV.** Every folder with its subtree's file
+  count and size, the grand totals, and a header carrying the bucket name and the
+  local date/time. The Excel workbook adds a second sheet listing every object
+  (size, status, storage class, upload/verify times, SHA-256, manifest state,
+  expiry) with filters on; the PDF is a paginated, indented report for printing or
+  filing. Adds the `openpyxl` and `reportlab` dependencies — rebuild the image.
+
 ## 1.11.0
 
 - **Tree tab** — browse the archive as a lazily-expanded folder tree, with each folder
