@@ -542,8 +542,15 @@ index row intact, and write no tombstone.
 ### Can ColdVault delete at all?
 
 The Retention tab **tells you**, rather than leaving it to your memory of the IAM
-policy. On open it probes the permission — a no-op `delete-object` on a random key under
-a reserved prefix, which is idempotent and removes nothing — and shows one of:
+policy. There's no read-only way to ask S3 this, so ColdVault probes it: a
+`delete-object` on a random key under a reserved prefix. Nothing of yours is named —
+the key doesn't exist, and S3's delete is idempotent, so it removes nothing. The
+result is **probed once and remembered**; it is re-probed only when you press
+**Re-check** (an IAM policy doesn't change between page loads). Set
+`COLDVAULT_DELETE_PROBE=false` if you'd rather ColdVault never issue a delete call at
+all — the banner then reads "unknown" and the delete buttons stay disabled.
+
+The banner shows one of:
 
 - 🔒 **Append-only** — the IAM user has no `s3:DeleteObject`, so nothing in ColdVault can
   remove your archive. The delete buttons are disabled. Scheduling expiry still works

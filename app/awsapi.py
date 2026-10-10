@@ -10,8 +10,12 @@ class AwsError(Exception):
     pass
 
 
-def aws(*args, log=True, timeout=None):
-    """Run an aws CLI command, log it, return parsed JSON output (or {})."""
+def aws(*args, log=True, log_errors=True, timeout=None):
+    """Run an aws CLI command, log it, return parsed JSON output (or {}).
+
+    `log_errors=False` is for calls whose failure is an expected answer rather
+    than a fault (the delete-permission probe): the caller logs the conclusion,
+    so an ERROR row here would just cry wolf."""
     cmd = ["aws", *args, "--output", "json"]
     pretty = " ".join(shlex.quote(c) for c in cmd)
     t0 = time.time()
@@ -20,12 +24,15 @@ def aws(*args, log=True, timeout=None):
     except FileNotFoundError:
         raise AwsError("aws CLI not found — is it installed in the container?")
     except subprocess.TimeoutExpired:
-        log_event("ERROR", "aws", f"timeout after {timeout}s: {pretty}")
+        if log_errors:
+            log_event("ERROR", "aws", f"timeout after {timeout}s: {pretty}")
         raise AwsError(f"aws command timed out: {pretty}")
     dur = time.time() - t0
     if p.returncode != 0:
         err = (p.stderr or "").strip()
-        log_event("ERROR", "aws", f"failed (exit {p.returncode}, {dur:.1f}s): {pretty}", err[:2000])
+        if log_errors:
+            log_event("ERROR", "aws", f"failed (exit {p.returncode}, {dur:.1f}s): {pretty}",
+                      err[:2000])
         raise AwsError(err or f"aws exited {p.returncode}")
     if log:
         log_event("DEBUG", "aws", f"ok ({dur:.1f}s): {pretty}")

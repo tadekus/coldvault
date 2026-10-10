@@ -61,22 +61,58 @@ def days_left(row, as_of=None):
     return max(0, (when - (as_of or datetime.now())).days)
 
 
-def can_delete(bucket):
+def _probe_key(bucket):
+    return f"delete_probe:{bucket}"
+
+
+def can_delete(bucket, recheck=False):
     """Is this IAM user allowed to delete from the bucket?
 
-    Probes with delete-object on a random key under a reserved prefix. S3's
-    delete is idempotent, so a key that doesn't exist is removed from nothing —
-    the call only tells us whether the permission exists. Returns
-    (True|False|None, detail); None means we couldn't tell (e.g. network)."""
+    There is no read-only way to ask S3 this, so we probe: delete-object on a
+    random key under a reserved prefix. Nothing of yours is ever named — the key
+    doesn't exist, and S3's delete is idempotent, so deleting it removes nothing.
+
+    The answer is **cached in the settings table** and only re-probed when asked
+    (the Re-check button). An IAM policy doesn't change between page loads, and
+    probing on every Retention/Tree render filled the log with alarming
+    AccessDenied lines and — on a versioned bucket, where deleting a missing key
+    writes a delete marker — would have littered the bucket.
+
+    Returns (True|False|None, detail, checked_at); None means we couldn't tell."""
+    skey = _probe_key(bucket)
+    if not recheck:
+        cached = db.get_setting(skey)
+        if cached:
+            try:
+                c = json.loads(cached)
+                return c.get("can_delete"), c.get("detail"), c.get("checked_at")
+            except ValueError:
+                pass
+    if not config.DELETE_PROBE:
+        return None, "probe disabled (COLDVAULT_DELETE_PROBE=false)", None
+
     key = f".coldvault-permission-probe/{uuid4().hex}"
     try:
-        awsapi.s3api("delete-object", "--bucket", bucket, "--key", key, log=False)
-        return True, None
+        awsapi.s3api("delete-object", "--bucket", bucket, "--key", key,
+                     log=False, log_errors=False)
+        allowed, detail = True, None
     except Exception as e:
         msg = str(e)
         if "AccessDenied" in msg or "not authorized" in msg or "Forbidden" in msg:
-            return False, "AccessDenied — the IAM user has no s3:DeleteObject"
-        return None, msg[:200]
+            allowed, detail = False, "AccessDenied — the IAM user has no s3:DeleteObject"
+        else:
+            allowed, detail = None, msg[:200]
+    checked_at = db.now()
+    log_event("INFO", "retention",
+              f"delete-permission probe on s3://{bucket}: "
+              + ("ALLOWED — this IAM user can delete" if allowed is True else
+                 "denied — append-only, nothing here can delete" if allowed is False
+                 else f"inconclusive ({detail})")
+              + " (probe targets a random non-existent key; nothing of yours is touched)")
+    if allowed is not None:       # don't cache a network blip
+        db.set_setting(skey, json.dumps(
+            {"can_delete": allowed, "detail": detail, "checked_at": checked_at}))
+    return allowed, detail, checked_at
 
 
 def bucket_versioning(bucket):
@@ -84,8 +120,10 @@ def bucket_versioning(bucket):
     delete marker — the data (and its cost) stays until the version is purged."""
     try:
         return (awsapi.s3api("get-bucket-versioning", "--bucket", bucket,
-                             log=False) or {}).get("Status")
+                             log=False, log_errors=False) or {}).get("Status")
     except Exception:
+        # Usually just a missing s3:GetBucketVersioning — not knowing is fine,
+        # the preview simply can't warn about delete markers. Not an error.
         return None
 
 

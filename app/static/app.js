@@ -1089,36 +1089,58 @@ $("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });
 $("#btnRtDueRefresh").onclick = () => loadRetention();
 $("#rtDueScope").onchange = () => loadRetention();
 
-async function loadRetentionPermission() {
+// Unschedule everything in the current list in one call — clearing a folder's
+// worth of objects a row at a time is a lot of clicking (and a lot of log lines).
+$("#btnRtUnsetAll").onclick = async () => {
+  const keys = [...$("#rtDueTable").querySelectorAll(".rtUnset")].map(b => b.dataset.key);
+  if (!keys.length) return;
+  if (!confirm(`Clear the expiry date on ${keys.length} object(s)?\n\n`
+             + `This only unschedules them — no data is touched.`)) return;
+  $("#rtDueResult").textContent = "clearing…";
+  try {
+    const r = await api("/api/retention/expiry", {
+      body: { bucket: rtBucket(), keys, date: null } });
+    $("#rtDueResult").textContent = `✔ expiry cleared for ${r.updated.toLocaleString()} object(s)`;
+    loadRetention(true);
+  } catch (e) { $("#rtDueResult").textContent = "✘ " + e.message; }
+};
+
+async function loadRetentionPermission(recheck) {
   const el = $("#rtPerm");
   el.style.display = "";
-  el.innerHTML = `<div class="muted">checking delete permission…</div>`;
+  el.innerHTML = `<div class="muted">${recheck ? "re-probing" : "checking"} delete permission…</div>`;
   try {
-    const r = await api(`/api/retention/permission?bucket=${encodeURIComponent(rtBucket())}`);
+    const r = await api(`/api/retention/permission?${recheck ? "recheck=1&" : ""}bucket=`
+                        + encodeURIComponent(rtBucket()));
     trCanDelete = r.can_delete;
     const dis = r.can_delete !== true;
     $("#btnRtDelete").disabled = dis;
     $("#btnRtDeleteDue").disabled = dis;
+    const foot = `<div class="muted" style="margin-top:6px">
+        ${r.checked_at ? `Probed ${esc(r.checked_at)} and remembered — ColdVault does not re-probe
+           on its own.` : ""}
+        <button id="btnRtRecheck" class="secondary" style="margin-left:6px">Re-check</button></div>`;
     if (r.can_delete === true) {
       el.innerHTML = `<div class="banner warn">⚠ This IAM user <b>CAN permanently delete</b> from
         <code>${esc(r.bucket)}</code>. Deletions here are irreversible.</div>
         <div class="muted" style="margin-top:6px">To make ColdVault strictly append-only, remove
-        <code>s3:DeleteObject</code> from the IAM policy — every other feature keeps working.</div>`;
+        <code>s3:DeleteObject</code> from the IAM policy — every other feature keeps working.</div>${foot}`;
     } else if (r.can_delete === false) {
       el.innerHTML = `<div class="banner ok">🔒 Append-only: this IAM user <b>cannot delete</b> from
         <code>${esc(r.bucket)}</code>, so nothing here can remove your archive.</div>
         <div class="muted" style="margin-top:6px">Scheduling expiry still works (it only flags what's due).
-        To enable deletion, grant <code>s3:DeleteObject</code> on <code>arn:aws:s3:::${esc(r.bucket)}/*</code>.</div>`;
+        To enable deletion, grant <code>s3:DeleteObject</code> on <code>arn:aws:s3:::${esc(r.bucket)}/*</code>.</div>${foot}`;
     } else {
-      el.innerHTML = `<div class="banner warn">Couldn't determine delete permission: ${esc(r.detail || "unknown")}</div>`;
+      el.innerHTML = `<div class="banner warn">Delete permission unknown: ${esc(r.detail || "not probed")}</div>${foot}`;
     }
+    $("#btnRtRecheck").onclick = () => loadRetentionPermission(true);
   } catch (e) {
     el.innerHTML = `<div class="muted">permission check failed: ${esc(e.message)}</div>`;
   }
 }
 
-async function loadRetention() {
-  loadRetentionPermission();
+async function loadRetention(skipPerm) {
+  if (!skipPerm) loadRetentionPermission();
   try {
     const scope = $("#rtDueScope").value;
     const [due, del] = await Promise.all([
@@ -1157,7 +1179,7 @@ async function loadRetention() {
       try {
         await api("/api/retention/expiry", { body: {
           bucket: rtBucket(), keys: [b.dataset.key], date: null } });
-        loadRetention();
+        loadRetention(true);   // just the table — no need to re-check permission
       } catch (e) { b.disabled = false; alert("✘ " + e.message); }
     });
 
