@@ -60,8 +60,16 @@ main { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .box h3 { margin: 0 0 10px; font-size: 15px; }
 .box h4 { margin: 12px 0 6px; font-size: 13px; color: var(--muted); }
 .kv div { display: flex; gap: 8px; padding: 2px 0; }
-.kv b { color: var(--muted); font-weight: 500; min-width: 130px; }
+.kv b { color: var(--muted); font-weight: 500; min-width: 130px; flex: none; }
 .kv code { font-family: ui-monospace, monospace; }
+/* An object key is longer than any sane column, so wrap it instead of pushing
+   the panel sideways. min-width:0 lets a flex item shrink below its content. */
+.kv > div { align-items: flex-start; }
+.kv > div > :not(b) { min-width: 0; overflow-wrap: anywhere; }
+/* "Uploading now" is a stack of files — not another flex row, which would lay
+   them out side by side and overflow once a path is long. */
+.kv .uplist { display: block; min-width: 0; flex: 1; }
+.kv .uplist > div { display: block; padding: 1px 0; overflow-wrap: anywhere; }
 
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 .spacer { flex: 1; }

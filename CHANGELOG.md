@@ -4,6 +4,14 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.12.3
+
+- **"Uploading now" stacks its files instead of running off the side.** The
+  dashboard's key/value styling made *every* nested div a flex row, so the two
+  concurrent uploads were laid out side by side and a full object key pushed the
+  panel into a horizontal scroll. Each file is now its own line, and long keys and
+  paths wrap inside the panel rather than widening it.
+
 ## 1.12.2
 
 - **The delete-permission probe no longer runs on every render, and no longer

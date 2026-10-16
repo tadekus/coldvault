@@ -81,8 +81,9 @@ async function loadDashboard() {
       <div><b>Auto-upload</b>${st.auto_upload ? "enabled" : "disabled"}</div>
       <div><b>Upload queue</b>${st.queue_size} waiting${st.current_session ? `, session #${st.current_session} running` : ""}</div>` +
       ((st.uploading || []).length
-        ? `<div><b>Uploading now</b><div>` +
-          st.uploading.map(u => `<code>${esc(u.key)}</code> <span class="muted">(${fmtBytes(u.size)})</span>`).join("<br>") +
+        ? `<div><b>Uploading now</b><div class="uplist">` +
+          st.uploading.map(u =>
+            `<div><code>${esc(u.key)}</code> <span class="muted">(${fmtBytes(u.size)})</span></div>`).join("") +
           `</div></div>`
         : "");
 
