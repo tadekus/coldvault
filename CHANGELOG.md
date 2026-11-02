@@ -4,6 +4,20 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.15.0
+
+- **Tree shows every bucket.** The Tree tab's top level is now every bucket in the
+  index (plus the active one), each with its object count and size; click a bucket
+  to open it. The active bucket opens on first visit, and whatever you open stays
+  open across refreshes, per bucket.
+  - **Restore** and **expiry** act across buckets in one go — the selection is sent
+    to each bucket separately.
+  - **Delete** stays one bucket at a time (its typed confirmation is the bucket
+    name), and is disabled with a reason when the selection spans buckets or this
+    IAM user can't delete from that bucket.
+  - **Export** gets a bucket picker; each export is still one bucket's whole tree.
+- The tree no longer follows the Index tab's bucket filter.
+
 ## 1.14.0
 
 - **The canary picks the bucket.** A canary file can now name the bucket its drive

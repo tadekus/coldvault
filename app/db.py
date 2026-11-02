@@ -503,6 +503,13 @@ def tree_children(bucket, prefix="", file_limit=1000):
     return folders, files
 
 
+def bucket_totals():
+    """Every indexed bucket with its object count and bytes — the roots of the
+    Tree view."""
+    return _rows("SELECT bucket, COUNT(*) c, COALESCE(SUM(size),0) b "
+                 "FROM files GROUP BY bucket ORDER BY bucket")
+
+
 def files_for_export(bucket, prefix="", limit=500000):
     """Every indexed object under a prefix, key-ordered — the input for the
     tree export's folder roll-up."""

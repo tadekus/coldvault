@@ -531,7 +531,9 @@ Results show as `csv✓` / `csv✗` in the Downloaded-files table.
 ## Tree view
 
 The **Tree** tab shows the archive as a folder tree, expanded lazily so it stays fast
-on large buckets. Each folder reports its whole subtree's file count and size.
+on large buckets. The top level lists **every bucket** in the index (plus the active
+one), each with its object count and size — click a bucket to open it; the active one
+opens on first visit. Each folder reports its whole subtree's file count and size.
 
 Open folders stay open while you work — ticking, scheduling or refreshing never
 collapses the tree or moves you off your place.
@@ -540,16 +542,18 @@ Tick a **folder** to act on everything inside it, or tick individual files, then
 
 - **Restore selected** — requests a Bulk/Standard restore for every object under the
   selection (the prefix is expanded server-side, so a folder of thousands of clips is
-  one click, not thousands of checkboxes).
+  one click, not thousands of checkboxes). The selection may span buckets.
 - **Set / Clear expiry** — schedules a planned deletion date for the selection, the
   same mechanism as the Retention tab. Scheduling never deletes: what you schedule is
   listed under **Retention → Expiry schedule**, to action deliberately once it's due.
+  Works across buckets too.
 - **Delete selected** — runs the same guarded flow as the Retention tab: a preview of
-  what it covers, the cost warnings, a confirmation, and typing the bucket name.
+  what it covers, the cost warnings, a confirmation, and typing the bucket name. It
+  takes **one bucket at a time**, so untick the others first.
 
 ### Exporting the tree
 
-**Excel**, **PDF** and **CSV** buttons export the whole bucket's tree — every folder
+Pick the bucket next to **Export**; the **Excel**, **PDF** and **CSV** buttons export that whole bucket's tree — every folder
 with its subtree's file count and size, plus the grand totals — stamped with the
 bucket name and the local date and time, so a filed or printed copy is
 self-describing. The export covers the bucket, not just what you've ticked.

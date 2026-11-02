@@ -99,6 +99,8 @@ button.danger { background: #3a1f1c; color: var(--err); border-color: #5a2a24; }
 .tree .fname { cursor: pointer; color: var(--accent); }
 .tree .leaf { font-family: ui-monospace, monospace; font-size: 12px; }
 .tree .meta { color: var(--muted); font-size: 11px; }
+.tree .trbucket { padding: 4px 0; }
+.tree .trbucket + .kids { margin-bottom: 6px; }
 .tree .kids { margin-left: 18px; border-left: 1px solid var(--border); padding-left: 8px; }
 .banner { padding: 10px 14px; border-radius: 8px; font-weight: 600; }
 .banner.ok { background: #16351f; color: #cdeedb; }

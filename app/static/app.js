@@ -949,27 +949,58 @@ $("#btnDownload").onclick = async () => {
 };
 
 /* ---------- tree view ---------- */
-const trPrefixes = new Set();   // ticked folders (act on whole subtree)
-const trKeys = new Set();       // ticked individual files
-const trOpen = new Set();       // expanded folders — survives re-renders
+// Every indexed bucket is a root of the tree. Node ids are "bucket|prefix"
+// (selId), so selections and open folders in different buckets never collide;
+// "bucket|" is the bucket itself.
+const trPrefixes = new Set();   // ticked folders, "bucket|prefix/" (act on whole subtree)
+const trKeys = new Set();       // ticked files, "bucket|key"
+const trOpen = new Set();       // expanded nodes — survives re-renders
+let trOpenedActive = false;     // open the active bucket on first visit only
+const trPerm = {};              // bucket -> can_delete (true|false|null), fetched on demand
 
-function trBucket() {
-  return ($("#bucketFilter") && $("#bucketFilter").value && $("#bucketFilter").value !== "*")
-    ? $("#bucketFilter").value : ($("#bucketBadge").dataset.bucket || "");
+// The selection grouped per bucket: Map(bucket -> {prefixes, keys}).
+function trByBucket() {
+  const g = new Map();
+  const get = b => g.get(b) || g.set(b, { prefixes: [], keys: [] }).get(b);
+  for (const id of trPrefixes) { const s = selItem(id); get(s.bucket).prefixes.push(s.key); }
+  for (const id of trKeys) { const s = selItem(id); get(s.bucket).keys.push(s.key); }
+  return g;
 }
 
-function trUpdateSel() {
+async function trPermission(bucket) {
+  if (!(bucket in trPerm)) {
+    try { trPerm[bucket] = (await api(`/api/retention/permission?bucket=${encodeURIComponent(bucket)}`)).can_delete; }
+    catch (e) { return null; }
+  }
+  return trPerm[bucket];
+}
+
+async function trUpdateSel() {
   const n = trPrefixes.size + trKeys.size;
+  const groups = trByBucket();
   $("#trSel").textContent = n
     ? `${trPrefixes.size} folder(s) + ${trKeys.size} file(s) selected`
+      + (groups.size > 1 ? ` in ${groups.size} buckets` : ` in ${[...groups.keys()][0]}`)
     : "nothing selected";
   $("#btnTrRestore").disabled = !n;
-  $("#btnTrDelete").disabled = !n || trCanDelete === false;
+  const del = $("#btnTrDelete");
+  del.disabled = !n || groups.size > 1;
+  del.title = groups.size > 1 ? "Delete works on one bucket at a time" : "";
+  if (n && groups.size === 1) {
+    const b = [...groups.keys()][0];
+    const allowed = await trPermission(b);
+    const now = trByBucket();   // the selection may have changed while we asked
+    if (allowed === false && now.size === 1 && now.has(b)) {
+      del.disabled = true;
+      del.title = `this IAM user cannot delete from ${b}`;
+    }
+  }
 }
 
-// a folder is covered if it or any ancestor prefix is ticked
-function trCovered(prefix) {
-  for (const p of trPrefixes) if (prefix === p || prefix.startsWith(p)) return true;
+// a node is covered if it or any ancestor folder is ticked (ids carry the
+// bucket, so a tick never covers anything in another bucket)
+function trCovered(id) {
+  for (const p of trPrefixes) if (id === p || id.startsWith(p)) return true;
   return false;
 }
 
@@ -977,94 +1008,125 @@ function trCovered(prefix) {
 // folder doesn't need a re-render (which used to collapse the whole tree).
 function trSyncChecks() {
   $("#treeRoot").querySelectorAll(".trfolder").forEach(cb => {
-    const p = cb.dataset.prefix, cov = trCovered(p);
+    const p = cb.dataset.id, cov = trCovered(p);
     cb.checked = cov;
     cb.disabled = cov && !trPrefixes.has(p);   // covered by an ancestor
   });
   $("#treeRoot").querySelectorAll(".trfile").forEach(cb => {
-    const cov = trCovered(cb.dataset.key);
-    cb.checked = cov || trKeys.has(cb.dataset.key);
+    const cov = trCovered(cb.dataset.id);
+    cb.checked = cov || trKeys.has(cb.dataset.id);
     cb.disabled = cov;
   });
 }
 
-async function trExpand(el, prefix) {
-  const kids = el.querySelector(`[data-kids="${CSS.escape(prefix)}"]`);
-  const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(prefix)}"]`);
+async function trExpand(el, id) {
+  const kids = el.querySelector(`[data-kids="${CSS.escape(id)}"]`);
+  const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(id)}"]`);
   if (!kids) return;
   kids.hidden = false;
   if (tw) tw.textContent = "▾";
-  if (!kids.dataset.loaded) { kids.dataset.loaded = "1"; await trRenderInto(kids, prefix); }
+  if (!kids.dataset.loaded) { kids.dataset.loaded = "1"; await trRenderInto(kids, id); }
 }
 
-async function trRenderInto(el, prefix) {
+// Expand/collapse for the nodes just rendered into el, then reopen whatever
+// was open among them.
+async function trBindToggles(el, ids) {
+  el.querySelectorAll("[data-toggle]").forEach(t => t.onclick = async () => {
+    const id = t.dataset.toggle;
+    const kids = el.querySelector(`[data-kids="${CSS.escape(id)}"]`);
+    const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(id)}"]`);
+    if (!kids) return;
+    if (kids.hidden) {
+      trOpen.add(id);
+      await trExpand(el, id);
+    } else {
+      // keep descendants in trOpen so re-expanding restores the deeper state
+      trOpen.delete(id);
+      kids.hidden = true; if (tw) tw.textContent = "▸";
+    }
+  });
+  for (const id of ids) if (trOpen.has(id)) await trExpand(el, id);
+}
+
+async function trRenderInto(el, id) {
+  const { bucket, key: prefix } = selItem(id);
   el.innerHTML = `<div class="muted" style="padding:2px 0">loading…</div>`;
   let d;
   try {
-    d = await api(`/api/tree?bucket=${encodeURIComponent(trBucket())}&prefix=${encodeURIComponent(prefix)}`);
+    d = await api(`/api/tree?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}`);
   } catch (e) { el.innerHTML = `<div class="muted">✘ ${esc(e.message)}</div>`; return; }
   if (!d.folders.length && !d.files.length) {
     el.innerHTML = `<div class="muted" style="padding:2px 0">(empty)</div>`;
     return;
   }
+  const fid = f => selId(bucket, f.prefix), kid = f => selId(bucket, f.key);
   el.innerHTML =
     d.folders.map(f => `
-      <div class="node" data-prefix="${esc(f.prefix)}">
-        <span class="twisty" data-toggle="${esc(f.prefix)}">▸</span>
-        <input type="checkbox" class="trfolder" data-prefix="${esc(f.prefix)}"
-               ${trCovered(f.prefix) ? "checked" : ""} ${trCovered(f.prefix) && !trPrefixes.has(f.prefix) ? "disabled" : ""}>
-        <span class="fname" data-toggle="${esc(f.prefix)}">📁 ${esc(f.name.replace(/\/$/, ""))}</span>
+      <div class="node">
+        <span class="twisty" data-toggle="${esc(fid(f))}">▸</span>
+        <input type="checkbox" class="trfolder" data-id="${esc(fid(f))}"
+               ${trCovered(fid(f)) ? "checked" : ""} ${trCovered(fid(f)) && !trPrefixes.has(fid(f)) ? "disabled" : ""}>
+        <span class="fname" data-toggle="${esc(fid(f))}">📁 ${esc(f.name.replace(/\/$/, ""))}</span>
         <span class="meta">${f.count.toLocaleString()} file(s) · ${fmtBytes(f.bytes)}</span>
       </div>
-      <div class="kids" data-kids="${esc(f.prefix)}" hidden></div>`).join("") +
+      <div class="kids" data-kids="${esc(fid(f))}" hidden></div>`).join("") +
     d.files.map(f => `
       <div class="node">
         <span class="twisty"></span>
-        <input type="checkbox" class="trfile" data-key="${esc(f.key)}"
-               ${trKeys.has(f.key) || trCovered(f.key) ? "checked" : ""} ${trCovered(f.key) ? "disabled" : ""}>
+        <input type="checkbox" class="trfile" data-id="${esc(kid(f))}"
+               ${trKeys.has(kid(f)) || trCovered(kid(f)) ? "checked" : ""} ${trCovered(kid(f)) ? "disabled" : ""}>
         <span class="leaf">📄 ${esc(f.name)}</span>
         <span class="meta" title="${(f.size || 0).toLocaleString()} bytes">${fmtBytes(f.size)}</span>
         ${chip(f.status)}${manifestBadge(f.manifest_state)}
         ${f.expires_at ? `<span class="chip WARNING" title="scheduled for deletion">expires ${esc(f.expires_at.slice(0, 10))}</span>` : ""}
       </div>`).join("");
 
-  el.querySelectorAll("[data-toggle]").forEach(t => t.onclick = async () => {
-    const p = t.dataset.toggle;
-    const kids = el.querySelector(`[data-kids="${CSS.escape(p)}"]`);
-    const tw = el.querySelector(`.twisty[data-toggle="${CSS.escape(p)}"]`);
-    if (!kids) return;
-    if (kids.hidden) {
-      trOpen.add(p);
-      await trExpand(el, p);
-    } else {
-      // keep descendants in trOpen so re-expanding restores the deeper state
-      trOpen.delete(p);
-      kids.hidden = true; if (tw) tw.textContent = "▸";
-    }
-  });
   el.querySelectorAll(".trfolder").forEach(cb => cb.onchange = () => {
-    cb.checked ? trPrefixes.add(cb.dataset.prefix) : trPrefixes.delete(cb.dataset.prefix);
+    cb.checked ? trPrefixes.add(cb.dataset.id) : trPrefixes.delete(cb.dataset.id);
     trUpdateSel();
     trSyncChecks();   // mark descendants as covered, in place — no re-render
   });
   el.querySelectorAll(".trfile").forEach(cb => cb.onchange = () => {
-    cb.checked ? trKeys.add(cb.dataset.key) : trKeys.delete(cb.dataset.key);
+    cb.checked ? trKeys.add(cb.dataset.id) : trKeys.delete(cb.dataset.id);
     trUpdateSel();
   });
-
-  // restore whatever the user had open at this level
-  for (const f of d.folders) if (trOpen.has(f.prefix)) await trExpand(el, f.prefix);
+  await trBindToggles(el, d.folders.map(fid));
 }
 
-let trCanDelete = null;
 async function loadTree() {
-  if (trCanDelete === null) {
-    try { trCanDelete = (await api(`/api/retention/permission?bucket=${encodeURIComponent(trBucket())}`)).can_delete; }
-    catch (e) { trCanDelete = null; }
+  const el = $("#treeRoot");
+  let r;
+  try { r = await api("/api/tree/buckets"); }
+  catch (e) { el.innerHTML = `<div class="muted">✘ ${esc(e.message)}</div>`; return; }
+  if (!r.buckets.length) {
+    el.innerHTML = `<div class="muted" style="padding:2px 0">no buckets indexed yet</div>`;
+    return;
   }
+  // First visit: open the active bucket (or the only one) so the tree isn't
+  // just a list of closed buckets. After that, whatever you left open stays.
+  if (!trOpenedActive) {
+    trOpenedActive = true;
+    const first = r.buckets.length === 1 ? r.buckets[0].bucket : r.active;
+    if (first) trOpen.add(selId(first, ""));
+  }
+  const ex = $("#trExpBucket"), keep = ex.value;
+  ex.innerHTML = r.buckets.map(b => `<option value="${esc(b.bucket)}">${esc(b.bucket)}</option>`).join("");
+  ex.value = r.buckets.some(b => b.bucket === keep) ? keep : (r.active || r.buckets[0].bucket);
+
   trUpdateSel();
   const y = window.scrollY;
-  await trRenderInto($("#treeRoot"), "");
+  el.innerHTML = r.buckets.map(b => {
+    const id = selId(b.bucket, "");
+    return `
+      <div class="node trbucket">
+        <span class="twisty" data-toggle="${esc(id)}">▸</span>
+        <span class="fname" data-toggle="${esc(id)}">🪣 <b>${esc(b.bucket)}</b>${
+          b.bucket === r.active ? ` <span class="muted">(active)</span>` : ""}</span>
+        <span class="meta">${b.count.toLocaleString()} object(s) · ${fmtBytes(b.bytes)}</span>
+      </div>
+      <div class="kids" data-kids="${esc(id)}" hidden></div>`;
+  }).join("");
+  await trBindToggles(el, r.buckets.map(b => selId(b.bucket, "")));
   window.scrollTo({ top: y });   // a refresh shouldn't move you off your place
 }
 
@@ -1073,34 +1135,46 @@ $("#btnTrClear").onclick = () => {
 };
 
 $("#btnTrRestore").onclick = async () => {
-  const bucket = trBucket();
-  if (!confirm(`Request a ${$("#trTier").value} restore for ${trPrefixes.size} folder(s) and ${trKeys.size} file(s)?`)) return;
+  const groups = trByBucket();
+  if (!confirm(`Request a ${$("#trTier").value} restore for ${trPrefixes.size} folder(s) and ${trKeys.size} file(s)`
+      + (groups.size > 1 ? ` across ${groups.size} buckets (${[...groups.keys()].join(", ")})?` : ` in ${[...groups.keys()][0]}?`))) return;
   $("#trResult").textContent = "requesting restores…";
-  try {
-    const r = await api("/api/restore", { body: {
-      bucket, prefixes: [...trPrefixes], tier: $("#trTier").value, days: +$("#trDays").value,
-      items: [...trKeys].map(k => ({ bucket, key: k })),
-    }});
-    const failed = r.results.filter(x => !x.ok).length;
-    $("#trResult").innerHTML = failed
-      ? `<span style="color:var(--err)">requested ${r.results.length}, ${failed} failed — see Restores/Logs</span>`
-      : `<span style="color:var(--ok)">✔ restore requested for ${r.results.length} object(s)</span>`;
-  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+  let total = 0, failed = 0;
+  const errors = [];
+  for (const [bucket, g] of groups) {
+    try {
+      const r = await api("/api/restore", { body: {
+        bucket, prefixes: g.prefixes, tier: $("#trTier").value, days: +$("#trDays").value,
+        items: g.keys.map(k => ({ bucket, key: k })),
+      }});
+      total += r.results.length;
+      failed += r.results.filter(x => !x.ok).length;
+    } catch (e) { errors.push(`${bucket}: ${e.message}`); }
+  }
+  $("#trResult").innerHTML = (failed || errors.length)
+    ? `<span style="color:var(--err)">requested ${total}, ${failed} failed`
+      + (errors.length ? ` · ${esc(errors.join("; "))}` : "") + ` — see Restores/Logs</span>`
+    : `<span style="color:var(--ok)">✔ restore requested for ${total} object(s)</span>`;
 };
 
 async function trExpiry(date) {
-  const bucket = trBucket();
   if (!trPrefixes.size && !trKeys.size) return alert("Tick a folder or some files first");
   $("#trResult").textContent = date ? "scheduling expiry…" : "clearing expiry…";
+  let updated = 0;
   try {
-    const r = await api("/api/retention/expiry", { body: {
-      bucket, prefixes: [...trPrefixes], keys: [...trKeys], date,
-    }});
+    for (const [bucket, g] of trByBucket()) {
+      const r = await api("/api/retention/expiry", { body: {
+        bucket, prefixes: g.prefixes, keys: g.keys, date,
+      }});
+      updated += r.updated;
+    }
     $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ expiry ${
-      date ? "set to " + esc(date) : "cleared"} for ${r.updated.toLocaleString()} object(s)</span>`
+      date ? "set to " + esc(date) : "cleared"} for ${updated.toLocaleString()} object(s)</span>`
       + ` <span class="muted">· nothing is deleted automatically — see Retention → Expiry schedule</span>`;
-    loadTree();
-  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+  } catch (e) {
+    $("#trResult").textContent = `✘ ${e.message}` + (updated ? ` (after ${updated} object(s) were updated)` : "");
+  }
+  loadTree();
 }
 
 $("#btnTrExpiry").onclick = () => {
@@ -1113,7 +1187,7 @@ $("#btnTrExpiryClear").onclick = () => trExpiry(null);
 // Fetched rather than navigated to, so a missing optional dependency (or any
 // other error) shows up here instead of replacing the page with JSON.
 async function trExport(fmt) {
-  const q = new URLSearchParams({ bucket: trBucket(), format: fmt });
+  const q = new URLSearchParams({ bucket: $("#trExpBucket").value, format: fmt });
   $("#trResult").innerHTML = `<span class="muted">building the ${fmt.toUpperCase()} export…</span>`;
   try {
     const res = await fetch("/api/tree/export?" + q.toString());
@@ -1140,12 +1214,16 @@ $("#btnTrXlsx").onclick = () => trExport("xlsx");
 $("#btnTrPdf").onclick = () => trExport("pdf");
 $("#btnTrCsv").onclick = () => trExport("csv");
 
+// Deletion stays one bucket per action: the typed confirmation is that
+// bucket's name, and a multi-bucket delete would make it ambiguous.
 $("#btnTrDelete").onclick = async () => {
-  const bucket = trBucket();
+  const groups = trByBucket();
+  if (groups.size !== 1) return alert("Delete works on one bucket at a time — untick the others first");
+  const [[bucket, g]] = groups;
   $("#trResult").textContent = "checking what that covers…";
   let p;
   try {
-    p = await api("/api/retention/preview", { body: { bucket, prefixes: [...trPrefixes], keys: [...trKeys] } });
+    p = await api("/api/retention/preview", { body: { bucket, prefixes: g.prefixes, keys: g.keys } });
   } catch (e) { $("#trResult").textContent = "✘ " + e.message; return; }
   let warn = `PERMANENTLY DELETE ${p.count} object(s) (${fmtBytes(p.bytes)}) from ${bucket}?`;
   if (p.early_count) warn += `\n\n${p.early_count} are inside the ${p.min_days}-day minimum storage duration — you'll still be billed for up to ${p.max_early_days} more day(s).`;
@@ -1157,7 +1235,7 @@ $("#btnTrDelete").onclick = async () => {
   $("#trResult").textContent = "deleting…";
   try {
     const r = await api("/api/retention/delete", { body: {
-      bucket, prefixes: [...trPrefixes], keys: [...trKeys],
+      bucket, prefixes: g.prefixes, keys: g.keys,
       confirm: typed.trim(), reason: "tree selection",
     }});
     $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ deleted ${r.deleted} object(s) · ${fmtBytes(r.bytes)}</span>`
@@ -1170,6 +1248,7 @@ $("#btnTrDelete").onclick = async () => {
 
 /* ---------- retention / deletion ---------- */
 let rtLast = null;   // last preview, so delete acts on exactly what was shown
+let rtCanDelete = null;   // delete permission for the Retention tab's bucket
 
 function rtBucket() { return $("#bucketFilter").value && $("#bucketFilter").value !== "*"
   ? $("#bucketFilter").value : ($("#bucketBadge").dataset.bucket || ""); }
@@ -1270,7 +1349,8 @@ async function loadRetentionPermission(recheck) {
   try {
     const r = await api(`/api/retention/permission?${recheck ? "recheck=1&" : ""}bucket=`
                         + encodeURIComponent(rtBucket()));
-    trCanDelete = r.can_delete;
+    rtCanDelete = r.can_delete;
+    trPerm[r.bucket] = r.can_delete;
     const dis = r.can_delete !== true;
     $("#btnRtDelete").disabled = dis;
     $("#btnRtDeleteDue").disabled = dis;
@@ -1308,7 +1388,7 @@ async function loadRetention(skipPerm) {
     $("#rtDueCount").textContent =
       `— ${due.due} due now (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`
       + (due.next_expiry && !due.due ? ` · earliest ${due.next_expiry.slice(0, 10)}` : "");
-    $("#btnRtDeleteDue").disabled = due.due === 0 || trCanDelete !== true;
+    $("#btnRtDeleteDue").disabled = due.due === 0 || rtCanDelete !== true;
     $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr${i.due ? "" : ' style="opacity:.8"'}>
         <td class="key">${esc(i.key)}</td>
         <td class="num" title="${(i.size || 0).toLocaleString()} bytes">${fmtBytes(i.size)}</td>

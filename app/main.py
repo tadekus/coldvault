@@ -545,6 +545,18 @@ def api_tree():
     })
 
 
+@app.get("/api/tree/buckets")
+def api_tree_buckets():
+    """Roots of the Tree view: every bucket in the index, plus the active one
+    even if nothing has been indexed in it yet."""
+    rows = {r["bucket"]: {"bucket": r["bucket"], "count": r["c"], "bytes": r["b"]}
+            for r in db.bucket_totals()}
+    if config.BUCKET and config.BUCKET not in rows:
+        rows[config.BUCKET] = {"bucket": config.BUCKET, "count": 0, "bytes": 0}
+    return jsonify({"buckets": sorted(rows.values(), key=lambda r: r["bucket"]),
+                    "active": config.BUCKET})
+
+
 @app.get("/api/tree/export")
 def api_tree_export():
     """Download the whole tree (folders with subtree sizes, plus every file and
