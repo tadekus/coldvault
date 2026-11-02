@@ -247,6 +247,32 @@
       <tbody></tbody>
     </table>
   </div>
+
+  <h3 style="margin:18px 0 8px">Local files not in the index
+    <span id="orphSummary" class="muted"></span></h3>
+  <div class="row toolbar">
+    <button id="btnOrphScan" class="secondary">Scan download folder</button>
+    <span id="orphSel" class="muted">0 selected</span>
+    <button id="btnOrphSelArchived" class="secondary">Select still-archived</button>
+    <button id="btnOrphDelete" class="danger" disabled>Delete selected…</button>
+    <span id="orphResult" class="muted"></span>
+  </div>
+  <div class="muted" style="font-size:12px;margin-bottom:6px">
+    Files sitting in the download folder that no index row points at — usually left
+    behind when a bucket's index was cleared. Each one's path under the folder is its
+    S3 key, so ColdVault checks whether it's still archived in <b>any</b> indexed
+    bucket. Deleting here removes the <b>local</b> copy only; S3 is never touched.
+  </div>
+  <div class="tablewrap">
+    <table id="orphTable">
+      <thead><tr>
+        <th><input type="checkbox" id="orphSelAllBox"></th>
+        <th>Local path</th><th>Size</th><th>Modified</th><th>Still archived?</th>
+      </tr></thead>
+      <tbody><tr><td colspan="5" class="muted" style="padding:20px">
+        not scanned yet — press <b>Scan download folder</b></td></tr></tbody>
+    </table>
+  </div>
 </section>
 
 <!-- ================= LOGS ================= -->

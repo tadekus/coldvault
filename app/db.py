@@ -706,6 +706,45 @@ def list_downloads(session_id=None, limit=500):
     return _rows("SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,))
 
 
+def downloaded_paths():
+    """Every local path the index believes it wrote. Used to tell apart files on
+    disk that ColdVault put there from ones nothing references any more."""
+    return {r["local_path"] for r in
+            _rows("SELECT DISTINCT local_path FROM downloads WHERE local_path IS NOT NULL")}
+
+
+def find_keys_any_bucket(keys, chunk=400):
+    """key -> {bucket, size, status} for keys archived in ANY indexed bucket.
+
+    A downloaded file's path under the destination *is* its S3 key, so this
+    answers the question that matters before deleting a local copy: is this
+    still in the archive, or is the copy on disk the last one?"""
+    out = {}
+    keys = list(keys)
+    for i in range(0, len(keys), chunk):
+        part = keys[i:i + chunk]
+        for r in _rows(
+                f"SELECT key, bucket, size, status FROM files "
+                f"WHERE key IN ({','.join('?' * len(part))})", part):
+            # prefer a verified row if the same key exists in several buckets
+            if r["key"] not in out or r["status"] == "verified":
+                out[r["key"]] = {"bucket": r["bucket"], "size": r["size"],
+                                 "status": r["status"]}
+    return out
+
+
+def prune_orphan_dl_sessions():
+    """Drop finished download sessions that have no file rows left.
+
+    Clearing one bucket's index deletes its `downloads` rows, but `dl_sessions`
+    has no bucket column — without this, the Downloads tab kept showing sessions
+    claiming "5/5 files" while the file list underneath was empty."""
+    return _exec(
+        "DELETE FROM dl_sessions WHERE status NOT IN ('queued','running') "
+        "AND id NOT IN (SELECT DISTINCT session_id FROM downloads "
+        "               WHERE session_id IS NOT NULL)").rowcount
+
+
 def latest_downloads_map():
     """(bucket, key) -> {local_path, status} of the most recent download (any
     status). Later rows overwrite earlier, so the latest wins."""
@@ -757,6 +796,10 @@ def clear_index(bucket):
         counts["restores"] = _exec("DELETE FROM restores WHERE bucket=?", (bucket,)).rowcount
         counts["downloads"] = _exec("DELETE FROM downloads WHERE bucket=?", (bucket,)).rowcount
         counts["sessions"] = _exec("DELETE FROM sessions WHERE bucket=?", (bucket,)).rowcount
+        # dl_sessions has no bucket column (a session can span buckets), so drop
+        # the ones whose file rows we just removed instead of leaving them
+        # claiming files the index no longer knows about.
+        counts["dl_sessions"] = prune_orphan_dl_sessions()
     return counts
 
 

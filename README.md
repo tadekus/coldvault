@@ -393,6 +393,28 @@ speed appear in the session table and the log.
 > anywhere you like, e.g. `- /tank/restores:/downloads`. Downloads are refused
 > outside this directory.
 
+### Local files not in the index
+
+Downloaded data can outlive the index that described it — most often after
+**Clear local index** during a bucket migration, which drops that bucket's download
+records while the files stay on disk. **Scan download folder** finds them: every file
+under the download directory that no index row points at, newest-largest first.
+
+Because a downloaded file's path under the destination *is* its S3 key, ColdVault
+looks each one up across **every** indexed bucket and labels it:
+
+| Label | Meaning |
+|-------|---------|
+| `in <bucket>` | Still archived at the same size — safe to delete locally and re-restore later. |
+| `size differs` | Archived under that key, but not these bytes. Look before you delete. |
+| **`not archived`** | No indexed bucket has this key — the local copy may be the **only** one left. |
+
+**Select still-archived** ticks only the safely re-downloadable ones. **Delete
+selected** removes the **local** copy and nothing else — S3 is never touched. A file
+that isn't archived anywhere is refused by the API unless explicitly forced, and the
+UI makes you type `DELETE` for those; paths outside the download folder are always
+refused. Emptied directories are tidied up, and every deletion is logged.
+
 ### Restore from an edit (XML / AAF)
 
 Instead of hand-picking objects, upload an editorial exchange file in the **Index**

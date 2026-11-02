@@ -4,6 +4,27 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.13.0
+
+- **Local files not in the index** (Downloads tab) — scan the download folder for
+  files no index row points at. They accumulate silently: clearing one bucket's
+  index deletes its `downloads` rows, but the bytes stay on disk with nothing in
+  the app mentioning them.
+  - A downloaded file's path under the destination *is* its S3 key, so each orphan
+    is looked up across **every** indexed bucket and shown as *in &lt;bucket&gt;*,
+    *size differs*, or **not archived** — answering the only question that matters
+    before deleting: is this still in the archive, or the last copy?
+  - **Delete selected** removes the **local** copy only; S3 is never touched. A
+    file that isn't archived anywhere is refused by the API unless explicitly
+    forced, and the UI makes you type DELETE for those. Paths outside the download
+    folder are always refused, and directories left empty are tidied up.
+  - **Select still-archived** ticks only the files that are safely re-downloadable.
+- **Clearing one bucket's index no longer leaves phantom download sessions.**
+  `dl_sessions` has no bucket column, so a per-bucket clear removed the file rows
+  but kept the sessions — the tab then showed "5/5 files · 51.6 GB (100%)" above an
+  empty file list. Finished sessions with no remaining file rows are now dropped
+  too (running/queued ones are left alone).
+
 ## 1.12.3
 
 - **"Uploading now" stacks its files instead of running off the side.** The

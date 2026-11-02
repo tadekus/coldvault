@@ -699,6 +699,104 @@ async function loadDownloads() {
 
 $("#btnDlRefresh").onclick = loadDownloads;
 
+/* ---------- orphaned local files ---------- */
+const orphSel = new Set();
+let orphCache = [];
+
+function orphUpdateSel() {
+  const picked = orphCache.filter(f => orphSel.has(f.path));
+  const bytes = picked.reduce((n, f) => n + f.size, 0);
+  $("#orphSel").textContent = picked.length
+    ? `${picked.length} selected · ${fmtBytes(bytes)}` : "0 selected";
+  $("#btnOrphDelete").disabled = !picked.length;
+}
+
+async function orphScan() {
+  $("#orphSummary").textContent = "— scanning…";
+  let r;
+  try { r = await api("/api/download/orphans"); }
+  catch (e) { $("#orphSummary").textContent = "— ✘ " + e.message; return; }
+  orphCache = r.items;
+  orphSel.clear();
+  $("#orphSummary").textContent =
+    `— ${r.orphans.toLocaleString()} untracked file(s) · ${fmtBytes(r.orphan_bytes)} in ${esc(r.root)}`
+    + (r.unarchived ? ` · ⚠ ${r.unarchived} not in any indexed bucket (${fmtBytes(r.unarchived_bytes)})` : "")
+    + (r.tracked ? ` · ${r.tracked.toLocaleString()} tracked` : "");
+  $("#orphTable tbody").innerHTML = r.items.map(f => {
+    const state = !f.archived_in
+      ? `<span class="chip failed" title="no indexed bucket has this key — this local copy may be the only one">not archived</span>`
+      : f.size_match
+      ? `<span class="chip verified">in ${esc(f.archived_in)}</span>`
+      : `<span class="chip" style="background:var(--warn);color:#000"
+              title="archived under this key, but a different size">size differs · ${esc(f.archived_in)}</span>`;
+    return `<tr>
+      <td><input type="checkbox" class="orphsel" data-path="${esc(f.path)}"></td>
+      <td class="key">${esc(f.path)}</td>
+      <td class="num" title="${f.size.toLocaleString()} bytes">${fmtBytes(f.size)}</td>
+      <td class="mono">${esc(f.mtime)}</td>
+      <td>${state}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="muted" style="padding:20px">
+      nothing untracked — every file in the download folder is accounted for</td></tr>`;
+  if (r.truncated) {
+    $("#orphTable tbody").insertAdjacentHTML("beforeend",
+      `<tr><td colspan="5" class="muted">list truncated — scan again after deleting some</td></tr>`);
+  }
+  $$("#orphTable .orphsel").forEach(cb => cb.onchange = () => {
+    cb.checked ? orphSel.add(cb.dataset.path) : orphSel.delete(cb.dataset.path);
+    orphUpdateSel();
+  });
+  orphUpdateSel();
+}
+
+$("#btnOrphScan").onclick = orphScan;
+
+$("#orphSelAllBox").onchange = e => {
+  $$("#orphTable .orphsel").forEach(cb => {
+    cb.checked = e.target.checked;
+    cb.checked ? orphSel.add(cb.dataset.path) : orphSel.delete(cb.dataset.path);
+  });
+  orphUpdateSel();
+};
+
+// The safe bulk action: only files that still exist in an indexed bucket.
+$("#btnOrphSelArchived").onclick = () => {
+  orphSel.clear();
+  orphCache.forEach(f => { if (f.archived_in && f.size_match) orphSel.add(f.path); });
+  $$("#orphTable .orphsel").forEach(cb => cb.checked = orphSel.has(cb.dataset.path));
+  orphUpdateSel();
+};
+
+$("#btnOrphDelete").onclick = async () => {
+  const paths = [...orphSel];
+  const picked = orphCache.filter(f => orphSel.has(f.path));
+  const risky = picked.filter(f => !f.archived_in);
+  const bytes = picked.reduce((n, f) => n + f.size, 0);
+  let msg = `Delete ${paths.length} local file(s), freeing ${fmtBytes(bytes)}?\n\n`
+          + `This removes the local copy only — nothing in S3 is touched.`;
+  if (risky.length) {
+    msg += `\n\n⚠ ${risky.length} of them are NOT archived in any indexed bucket:\n`
+         + risky.slice(0, 5).map(f => "  " + f.key).join("\n")
+         + (risky.length > 5 ? `\n  … and ${risky.length - 5} more` : "")
+         + `\n\nFor these, the file on disk may be the ONLY copy left.`;
+  }
+  if (!confirm(msg)) return;
+  if (risky.length && prompt(`${risky.length} file(s) exist nowhere else that ColdVault knows of.\n`
+                           + `Type DELETE to remove them anyway:`, "") !== "DELETE") {
+    $("#orphResult").textContent = "cancelled";
+    return;
+  }
+  $("#orphResult").textContent = "deleting…";
+  try {
+    const r = await api("/api/download/orphans/delete", {
+      body: { paths, force: risky.length > 0 } });
+    $("#orphResult").innerHTML =
+      `<span style="color:var(--ok)">✔ deleted ${r.deleted} file(s) · freed ${fmtBytes(r.freed)}</span>`
+      + (r.failed.length ? ` <span style="color:var(--err)">· ${r.failed.length} failed</span>` : "");
+    orphScan();
+  } catch (e) { $("#orphResult").textContent = "✘ " + e.message; }
+};
+
 $("#btnDlVerify").onclick = async () => {
   $("#dlSummary").textContent = "checking local files…";
   try {

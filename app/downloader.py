@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import awsapi
 import config
@@ -65,6 +66,84 @@ def verify_local_downloads():
     log_event("INFO", "download",
               f"local integrity check: {checked} downloaded file(s), {deleted} now missing")
     return checked, deleted
+
+
+def scan_orphans(root=None, limit=5000):
+    """Files sitting in the download folder that no index row points at.
+
+    They appear when the index is cleared (migrating buckets drops that bucket's
+    `downloads` rows) or when a database is wiped — the bytes stay on disk,
+    silently taking up space, with nothing in the app mentioning them.
+
+    A downloaded file's path relative to the destination *is* its S3 key, so for
+    each orphan we also look the key up across every indexed bucket. That answers
+    the only question that matters before deleting one: is it still archived, or
+    is this the last copy? Returns (orphans, totals)."""
+    root = os.path.realpath(root or config.DOWNLOAD_DIR)
+    known = db.downloaded_paths()
+    found, tracked_n, tracked_b, truncated = [], 0, 0, False
+    for dirpath, _dirs, names in os.walk(root):
+        for n in names:
+            p = os.path.join(dirpath, n)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if p in known or os.path.realpath(p) in known:
+                tracked_n += 1
+                tracked_b += st.st_size
+                continue
+            if len(found) >= limit:
+                truncated = True
+                continue
+            found.append({"path": p, "key": os.path.relpath(p, root),
+                          "size": st.st_size,
+                          "mtime": datetime.fromtimestamp(st.st_mtime).strftime(db.TIME_FMT)})
+    archived = db.find_keys_any_bucket([f["key"] for f in found])
+    for f in found:
+        a = archived.get(f["key"])
+        f["archived_in"] = a["bucket"] if a else None
+        f["archived_status"] = a["status"] if a else None
+        # Same key, different size: the local copy is not what's in the archive.
+        f["size_match"] = bool(a) and int(a["size"] or 0) == f["size"]
+    found.sort(key=lambda f: -f["size"])
+    return found, {
+        "root": root,
+        "orphans": len(found),
+        "orphan_bytes": sum(f["size"] for f in found),
+        "unarchived": sum(1 for f in found if not f["archived_in"]),
+        "unarchived_bytes": sum(f["size"] for f in found if not f["archived_in"]),
+        "tracked": tracked_n, "tracked_bytes": tracked_b,
+        "truncated": truncated,
+    }
+
+
+def delete_local(paths, root=None):
+    """Delete local files under the download folder, then prune the directories
+    left empty. Refuses anything outside the folder. Never touches S3."""
+    root = os.path.realpath(root or config.DOWNLOAD_DIR)
+    deleted, freed, failed = 0, 0, []
+    for p in paths:
+        real = os.path.realpath(p)
+        if real != root and not real.startswith(root.rstrip("/") + "/"):
+            failed.append({"path": p, "error": "outside the download folder"})
+            continue
+        try:
+            size = os.path.getsize(real)
+            os.remove(real)
+            deleted += 1
+            freed += size
+            log_event("INFO", "download", f"deleted local file {real} ({size:,} bytes)")
+        except OSError as e:
+            failed.append({"path": p, "error": str(e)})
+    # tidy up directories the deletions emptied (never the root itself)
+    for dirpath, _d, _f in sorted(os.walk(root), key=lambda t: -len(t[0])):
+        if dirpath != root:
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass
+    return deleted, freed, failed
 
 
 def plan_within_budget(items, budget):

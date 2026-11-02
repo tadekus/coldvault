@@ -795,6 +795,43 @@ def api_download_verify():
     return jsonify({"checked": checked, "deleted": deleted})
 
 
+@app.get("/api/download/orphans")
+def api_download_orphans():
+    """Files in the download folder that no index row points at, each checked
+    against every indexed bucket so you can see what's still archived."""
+    items, totals = downloader_mod.scan_orphans()
+    log_event("INFO", "download",
+              f"orphan scan of {totals['root']}: {totals['orphans']} untracked file(s), "
+              f"{totals['orphan_bytes']:,} bytes ({totals['unarchived']} not in any "
+              f"indexed bucket); {totals['tracked']} tracked")
+    return jsonify({"items": items, **totals})
+
+
+@app.post("/api/download/orphans/delete")
+def api_download_orphans_delete():
+    """Delete local files from the download folder. S3 is never touched.
+
+    Refuses a file that isn't archived in an indexed bucket — that copy may be
+    the only one left — unless the caller explicitly passes force."""
+    data = request.get_json(force=True)
+    paths = data.get("paths") or []
+    if not paths:
+        return jsonify({"error": "nothing selected"}), 400
+    if not data.get("force"):
+        known = {f["path"]: f for f in downloader_mod.scan_orphans()[0]}
+        risky = [p for p in paths if not (known.get(p) or {}).get("archived_in")]
+        if risky:
+            return jsonify({"error": f"{len(risky)} of these are not archived in any "
+                                     f"indexed bucket — the local copy may be the only "
+                                     f"one. Re-send with force to delete anyway.",
+                            "unarchived": risky[:50]}), 409
+    deleted, freed, failed = downloader_mod.delete_local(paths)
+    log_event("WARNING" if failed else "INFO", "download",
+              f"deleted {deleted} local file(s), freed {freed:,} bytes"
+              + (f"; {len(failed)} failed" if failed else ""))
+    return jsonify({"deleted": deleted, "freed": freed, "failed": failed})
+
+
 @app.get("/api/download/browse")
 def api_download_browse():
     path = request.args.get("path") or config.DOWNLOAD_DIR
