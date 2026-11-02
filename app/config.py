@@ -50,12 +50,20 @@ def _csv(name, default=""):
 
 
 BUCKET = env("COLDVAULT_BUCKET")
+# The .env value, kept after the UI's bucket picker overwrites BUCKET, so the
+# upload target dropdown can still offer the configured default.
+ENV_BUCKET = BUCKET
 PREFIX = env("COLDVAULT_PREFIX").strip("/")
 STORAGE_CLASS = env("COLDVAULT_STORAGE_CLASS", "DEEP_ARCHIVE")
 
 WATCH_DIRS = _csv("COLDVAULT_WATCH_DIRS", "/media")
 BROWSE_ROOTS = WATCH_DIRS + _csv("COLDVAULT_BROWSE_ROOTS")
 CANARY_NAME = env("COLDVAULT_CANARY", "coldvault.canary")
+# A canary file may name the bucket its drive belongs in ("bucket": "..."), so
+# one ColdVault can feed several buckets without touching the UI. The canary
+# lives on removable media, so this allowlist limits which buckets it may pick;
+# empty = any bucket the credentials can reach.
+CANARY_BUCKETS = _csv("COLDVAULT_CANARY_BUCKETS")
 AUTO_UPLOAD = env_bool("COLDVAULT_AUTO_UPLOAD", True)
 WATCH_INTERVAL = max(2, env_int("COLDVAULT_WATCH_INTERVAL", 10))
 

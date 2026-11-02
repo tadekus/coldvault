@@ -7,6 +7,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import audit as audit_mod
 import awsapi
+import buckets as buckets_mod
 import config
 import db
 import downloader as downloader_mod
@@ -203,6 +204,7 @@ def api_status():
         "storage_class": config.STORAGE_CLASS,
         "watch_dirs": config.WATCH_DIRS,
         "canary": config.CANARY_NAME,
+        "canary_buckets": config.CANARY_BUCKETS,
         "auto_upload": config.AUTO_UPLOAD,
         "notify_enabled": config.NOTIFY,
         "notify_ready": notify.config_problem() is None,
@@ -239,6 +241,15 @@ def api_buckets():
     buckets = [{"name": b["Name"], "created": b.get("CreationDate")}
                for b in resp.get("Buckets", [])]
     return jsonify({"buckets": buckets, "current": config.BUCKET})
+
+
+@app.get("/api/buckets/known")
+def api_buckets_known():
+    """Upload targets worth offering without calling AWS: the active bucket, the
+    configured default, the canary allowlist and every bucket already indexed.
+    (/api/buckets lists the whole account, which costs a list-buckets call.)"""
+    return jsonify({"buckets": buckets_mod.known(), "active": config.BUCKET,
+                    "canary_buckets": buckets_mod.allowlist()})
 
 
 @app.post("/api/bucket")
@@ -320,10 +331,17 @@ def api_browse():
                     files.append({"name": e.name, "size": sz})
     except OSError as e:
         return jsonify({"error": str(e)}), 400
+    # A canary in this folder already says where the drive belongs, so a manual
+    # upload of it can start from the same label and bucket the watcher would use.
+    canary = None
+    cpath = os.path.join(path, config.CANARY_NAME)
+    if os.path.isfile(cpath):
+        canary = watcher_mod.read_canary(cpath, path)
     parent = os.path.dirname(path.rstrip("/"))
     return jsonify({"path": path, "parent": parent if _allowed_path(parent) else None,
                     "dirs": dirs, "files": files, "file_count": nfiles,
-                    "files_truncated": nfiles > len(files), "total_bytes": total_bytes})
+                    "files_truncated": nfiles > len(files), "total_bytes": total_bytes,
+                    "canary": canary})
 
 
 @app.post("/api/upload")
@@ -331,6 +349,17 @@ def api_upload():
     data = request.get_json(force=True)
     label = (data.get("label") or "").strip()
     items = data.get("items")
+
+    # The destination is explicit for a manual upload (the UI always sends it);
+    # omitting it falls back to the active bucket.
+    requested = (data.get("bucket") or "").strip()
+    try:
+        bucket = buckets_mod.check(requested) if requested else config.BUCKET
+    except buckets_mod.BucketError as e:
+        return jsonify({"error": str(e)}), 400
+    if not bucket:
+        return jsonify({"error": "no bucket set — pick one in Connection, or set "
+                                 "COLDVAULT_BUCKET"}), 400
 
     if items:  # explicit selection of files/folders
         clean = []
@@ -343,8 +372,8 @@ def api_upload():
             clean.append(it)
         if not clean:
             return jsonify({"error": "no items selected"}), 400
-        sid = up.enqueue(None, label, "manual", items=clean)
-        return jsonify({"session_id": sid})
+        sid = up.enqueue(None, label, "manual", items=clean, bucket=bucket)
+        return jsonify({"session_id": sid, "bucket": bucket})
 
     # whole folder
     path = (data.get("path") or "").strip()
@@ -352,8 +381,8 @@ def api_upload():
         return jsonify({"error": f"path must be inside: {', '.join(config.BROWSE_ROOTS)}"}), 400
     if not os.path.isdir(path):
         return jsonify({"error": "not a directory"}), 400
-    sid = up.enqueue(path, label, "manual")
-    return jsonify({"session_id": sid})
+    sid = up.enqueue(path, label, "manual", bucket=bucket)
+    return jsonify({"session_id": sid, "bucket": bucket})
 
 
 @app.get("/api/files")

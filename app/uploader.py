@@ -91,7 +91,10 @@ class Uploader:
             base = os.path.dirname(base)
         return base, pruned
 
-    def enqueue(self, path, label, trigger, items=None):
+    def enqueue(self, path, label, trigger, items=None, bucket=None):
+        """`bucket` pins this session's destination (a canary's own bucket, or
+        the one picked for a manual upload); None means the active bucket.
+        Callers are expected to have validated it — see buckets.check()."""
         if items:
             base, pruned = self._common_base(items)
             source = base
@@ -100,12 +103,13 @@ class Uploader:
             pruned = None
         if not label:
             label = os.path.basename(source.rstrip("/")) or "upload"
-        sid = db.create_session(config.BUCKET, source, label, trigger)
+        bucket = bucket or config.BUCKET
+        sid = db.create_session(bucket, source, label, trigger)
         if pruned is not None:
             self._selections[sid] = pruned
         what = f"{len(pruned)} selected item(s) under {source}" if pruned else source
         log_event("INFO", "upload",
-                  f"Session #{sid} queued: {what} -> s3://{config.BUCKET} "
+                  f"Session #{sid} queued: {what} -> s3://{bucket} "
                   f"(label='{label}', trigger={trigger})")
         self.q.put(sid)
         return sid

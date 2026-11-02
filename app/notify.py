@@ -185,7 +185,9 @@ def notify_upload_complete(sid):
     try:
         import audit as audit_mod
         session = db.get_session(sid) or {}
-        report = audit_mod.run_audit(config.BUCKET)
+        # Audit the bucket this session actually uploaded to — with a
+        # canary-chosen bucket that need not be the active one.
+        report = audit_mod.run_audit(session.get("bucket") or config.BUCKET)
         status = "OK" if report["ok_status"] else "ISSUES FOUND"
         label = session.get("label") or "drive"
         subject = f"ColdVault: {label} archived — audit {status}"

@@ -78,6 +78,9 @@ async function loadDashboard() {
     $("#watcherInfo").innerHTML = `
       <div><b>Watch dirs</b><code>${esc(st.watch_dirs.join(", "))}</code></div>
       <div><b>Canary file</b><code>${esc(st.canary)}</code></div>
+      <div><b>Canary buckets</b>${(st.canary_buckets || []).length
+        ? `<code>${esc(st.canary_buckets.join(", "))}</code>`
+        : `<span class="muted">any accessible (a canary may name its own)</span>`}</div>
       <div><b>Auto-upload</b>${st.auto_upload ? "enabled" : "disabled"}</div>
       <div><b>Upload queue</b>${st.queue_size} waiting${st.current_session ? `, session #${st.current_session} running` : ""}</div>` +
       ((st.uploading || []).length
@@ -91,7 +94,10 @@ async function loadDashboard() {
     $("#activeMounts").innerHTML = mounts.length
       ? mounts.map(([m, i]) =>
           `<div><code>${esc(m)}</code> → label <b>${esc(i.label)}</b>` +
-          (i.session_id ? ` (session #${i.session_id})` : "") + `</div>`).join("")
+          (i.bucket ? ` in <code>s3://${esc(i.bucket)}</code>` : "") +
+          (i.session_id ? ` (session #${i.session_id})` : "") +
+          (i.error ? `<div style="color:var(--err)">✘ ${esc(i.error)}</div>` : "") +
+          `</div>`).join("")
       : "none";
 
     $("#connInfo").innerHTML = `
@@ -238,6 +244,7 @@ $("#btnUseBucket").onclick = async () => {
     const r = await api("/api/bucket", { body: { name } });
     $("#testResult").textContent = `✔ now using s3://${r.bucket}`;
     loadDashboard();
+    loadUploadBuckets(r.bucket);
   } catch (e) {
     $("#testResult").textContent = "✘ " + e.message;
   }
@@ -269,6 +276,43 @@ async function loadBrowseRoots() {
 const uploadSel = new Map();
 const joinPath = (dir, name) => dir.replace(/\/$/, "") + "/" + name;
 
+// Destination bucket for manual uploads. Every upload says where it is going;
+// nothing is sent until a bucket is chosen here (the active one by default).
+// "*" can never appear in a bucket name, so this can't collide with a real one.
+const OTHER_BUCKET = "*other";
+
+async function loadUploadBuckets(select) {
+  const sel = $("#uploadBucket");
+  const keep = select || sel.value;
+  try {
+    const r = await api("/api/buckets/known");
+    const names = [...new Set([...(r.buckets || []), keep].filter(
+      b => b && b !== OTHER_BUCKET))];
+    sel.innerHTML = names.map(b =>
+      `<option value="${esc(b)}">s3://${esc(b)}${b === r.active ? " (active)" : ""}</option>`)
+      .join("") + `<option value="${OTHER_BUCKET}">other bucket…</option>`;
+    sel.value = names.includes(keep) ? keep : (r.active || names[0] || "");
+  } catch (e) {
+    sel.innerHTML = `<option value="">✘ ${esc(e.message)}</option>`;
+  }
+}
+
+// "other bucket…" types a name that isn't in the index yet; the server still
+// checks it can be reached before queueing anything.
+function pickUploadBucket(name) {
+  const sel = $("#uploadBucket");
+  if (![...sel.options].some(o => o.value === name))
+    sel.insertBefore(new Option(`s3://${name}`, name), sel.firstChild);
+  sel.value = name;
+}
+$("#uploadBucket").onchange = () => {
+  const sel = $("#uploadBucket");
+  if (sel.value !== OTHER_BUCKET) return;
+  const name = (prompt("Bucket name to upload to:", "") || "").trim();
+  if (name) pickUploadBucket(name);
+  else loadUploadBuckets();
+};
+
 function updateUploadSel() {
   $("#uploadSelCount").textContent = `${uploadSel.size} selected`;
   $("#uploadSelHint").textContent = uploadSel.size
@@ -281,6 +325,17 @@ async function browse(path) {
     const r = await api("/api/browse?path=" + encodeURIComponent(path || ""));
     $("#uploadPath").value = r.path;
     $("#uploadSelBar").style.display = "";
+
+    // This folder has a canary: start from the label and bucket the watcher
+    // would have used, so a manual re-run of a drive lands in the same place.
+    if (r.canary) {
+      if (r.canary.bucket) pickUploadBucket(r.canary.bucket);
+      if (!$("#uploadLabel").value.trim()) $("#uploadLabel").value = r.canary.label || "";
+      $("#uploadCanary").textContent = `canary here → label "${r.canary.label}"`
+        + (r.canary.bucket ? `, bucket ${r.canary.bucket}` : ", no bucket named");
+    } else {
+      $("#uploadCanary").textContent = "";
+    }
     const rows = [];
     if (r.parent)
       rows.push(`<div class="browse-item"><span style="width:16px"></span><a class="navdir" data-p="${esc(r.parent)}">⬑ up</a></div>`);
@@ -329,21 +384,25 @@ $("#btnClearSel").onclick = () => {
 
 $("#btnUpload").onclick = async () => {
   const label = $("#uploadLabel").value.trim();
+  const bucket = $("#uploadBucket").value;
+  if (!bucket || bucket === OTHER_BUCKET)
+    return alert("Pick the bucket this upload should go to");
+  const dest = `\n\nDestination: s3://${bucket}${label ? "/" + label : ""}`;
   let body;
   if (uploadSel.size) {
     const items = [...uploadSel.keys()];
     const dirs = [...uploadSel.values()].filter(v => v.type === "dir").length;
-    if (!confirm(`Upload ${items.length} selected item(s) (${dirs} folder(s), ${items.length - dirs} file(s))?`)) return;
-    body = { items, label };
+    if (!confirm(`Upload ${items.length} selected item(s) (${dirs} folder(s), ${items.length - dirs} file(s))?${dest}`)) return;
+    body = { items, label, bucket };
   } else {
     const path = $("#uploadPath").value.trim();
     if (!path) return alert("Pick a location, or select files/folders to upload");
-    if (!confirm(`Upload the entire folder ${path}?`)) return;
-    body = { path, label };
+    if (!confirm(`Upload the entire folder ${path}?${dest}`)) return;
+    body = { path, label, bucket };
   }
   try {
     const r = await api("/api/upload", { body });
-    alert(`Upload session #${r.session_id} queued`);
+    alert(`Upload session #${r.session_id} queued → s3://${r.bucket}`);
     uploadSel.clear();
     updateUploadSel();
     browse($("#uploadPath").value);
@@ -1318,3 +1377,4 @@ $("#btnLogs").onclick = loadLogs;
 /* ---------- init ---------- */
 loadDashboard();
 loadBrowseRoots();
+loadUploadBuckets();

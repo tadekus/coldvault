@@ -69,7 +69,12 @@
       <input id="uploadPath" placeholder="pick a location above, or type a path" style="flex:2">
       <input id="uploadLabel" placeholder="label (optional, default = folder name)" style="flex:1">
       <button id="btnBrowse" class="secondary">Browse</button>
+    </div>
+    <div class="row">
+      <label for="uploadBucket" class="muted" style="font-size:12px">Upload to bucket</label>
+      <select id="uploadBucket" title="destination bucket for this upload" style="flex:1"></select>
       <button id="btnUpload">Start upload</button>
+      <span id="uploadCanary" class="muted" style="font-size:12px"></span>
     </div>
     <div class="row" id="uploadSelBar" style="display:none">
       <span id="uploadSelCount" class="muted">0 selected</span>

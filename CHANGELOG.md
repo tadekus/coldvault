@@ -4,6 +4,28 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.14.0
+
+- **The canary picks the bucket.** A canary file can now name the bucket its drive
+  belongs in — `{"name": "SSD01", "bucket": "my-archive-bucket"}`, or a `bucket:` line in
+  a plain-text canary — so auto-upload can feed several buckets without touching the
+  UI. A canary that names no bucket goes to the active bucket, as before; every
+  existing canary format still parses the same way.
+  - A named bucket that can't be used (typo, no access, not allowlisted) stops that
+    drive's upload instead of falling back to the active bucket. The reason shows
+    under *Active drives* on the dashboard and is logged once per plug-in.
+  - `COLDVAULT_CANARY_BUCKETS` optionally limits which buckets a canary may name,
+    since the canary lives on removable media.
+  - Restart handling follows the canary's bucket: a still-mounted drive whose last
+    upload to *its* bucket finished cleanly isn't re-uploaded.
+- **Manual uploads name their bucket.** A new *Upload to bucket* picker (active
+  bucket preselected, plus every known bucket and *other bucket…*) sits next to
+  Start upload, and the confirmation states the destination. The server checks the
+  bucket is reachable before queueing. Browsing into a folder with a canary
+  preselects its bucket and label. Choosing here doesn't change the active bucket.
+- Post-upload email audits now audit the bucket the session actually uploaded to,
+  not whichever bucket happens to be active.
+
 ## 1.13.0
 
 - **Local files not in the index** (Downloads tab) — scan the download folder for

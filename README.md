@@ -11,8 +11,9 @@ everything it does.
   upload sessions with live progress and speed, restore management, verified
   downloads of restored files, live logs.
 - **Canary-triggered ingest** — plug in an external drive containing a canary file
-  (`coldvault.canary`) and its contents are automatically uploaded to your bucket.
-  Works with Debian's `/media` automounts and macOS `/Volumes` alike.
+  (`coldvault.canary`) and its contents are automatically uploaded to your bucket —
+  or to the bucket the canary names, so each drive can go to its own production's
+  bucket. Works with Debian's `/media` automounts and macOS `/Volumes` alike.
 - **Verified uploads** — every object is uploaded with a SHA-256 checksum
   (`--checksum-sha256`), so S3 rejects corrupted transfers; the checksum returned by S3 is
   compared against the locally computed one before a file is marked `verified`.
@@ -176,6 +177,30 @@ Notes:
    A plain-text file works too — the first line becomes the label. An empty file uses
    the volume folder name.
 
+   The canary can also say **which bucket** the drive belongs in, so one ColdVault can
+   feed several buckets with no clicking — e.g. one bucket per production:
+
+   ```bash
+   echo '{"name": "SSD01", "bucket": "my-archive-bucket"}' > /path/to/drive/coldvault.canary
+   # or plain text, if you'd rather edit it by hand on set:
+   printf 'SSD01\nbucket: my-archive-bucket\n' > /path/to/drive/coldvault.canary
+   ```
+
+   In plain text, `bucket:`, `prefix:` and `name:` lines (`=` works too) are read
+   wherever they appear, the first other line is the label, and `#` lines are
+   comments. A canary that names no bucket goes to the **active** bucket, exactly as
+   before.
+
+   If the named bucket can't be used — a typo, no access, or not on the allowlist
+   below — the drive is **not uploaded at all** rather than quietly sent to the active
+   bucket. The dashboard shows the reason under *Active drives*, the log gets one
+   `ERROR` line; fix the canary and replug.
+
+   Because the canary lives on removable media, you can limit which buckets it may
+   pick with `COLDVAULT_CANARY_BUCKETS=my-archive-bucket,other-show` (empty = any bucket
+   the credentials can reach). The allowlist applies to canaries only — a bucket you
+   pick yourself for a manual upload isn't restricted by it.
+
 2. Plug the drive in. The watcher polls the watch roots (Debian: `/media`,
    macOS: `/Volumes` via the container's `/media`) every `COLDVAULT_WATCH_INTERVAL`
    seconds, scanning up to two levels deep (so `/media/<user>/<label>` is covered).
@@ -279,6 +304,14 @@ separate usb-to-nextcloud sync if you run one (they mount at different paths).
 
 Any folder can be uploaded from the dashboard (path field or **Browse**), as long as
 it is (a) bind-mounted into the container and (b) listed in `COLDVAULT_BROWSE_ROOTS`.
+
+Every manual upload names its destination in **Upload to bucket**. The list offers the
+active bucket (preselected), the `.env` default, the canary allowlist and every bucket
+already in the index; **other bucket…** takes any name, which is checked for access
+before anything is queued. The confirmation dialog repeats the destination. Browsing
+into a folder that has a canary preselects that canary's bucket and fills in its label,
+so re-running a drive by hand lands it where the watcher would have. Picking a bucket
+here does not change the active bucket.
 
 Because these mounts are specific to each machine, add them in a
 **`docker-compose.override.yml`** (git-ignored, auto-merged by `docker compose up`, so
