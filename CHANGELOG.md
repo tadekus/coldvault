@@ -4,6 +4,25 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.16.0
+
+- **Retention covers every bucket, so it matches the Tree.** An expiry set or a
+  deletion made from the Tree in a non-active bucket was invisible on the Retention
+  tab, which only looked at the active bucket (or the Index tab's filter). It now
+  has its own **Bucket** picker, defaulting to **all buckets**:
+  - The **Expiry schedule** lists every bucket's scheduled objects with a Bucket
+    column. Per-row *clear* and *Clear all shown* clear each row in its own bucket.
+  - The **Deletion log** shows deletions from every bucket, including Tree deletes.
+  - The permission panel shows one line per bucket. Each bucket is still probed
+    once and remembered.
+  - Prefix **Preview** and **Set/Clear expiry** run across the chosen buckets and
+    report per bucket.
+  - **Deleting is still one bucket at a time.** *Delete previewed* refuses a
+    preview that matched several buckets, and *Delete all due* refuses when items
+    are due in several, asking you to pick the bucket. The typed confirmation
+    names the bucket. The API also refuses `bucket: "*"` on delete.
+- The Retention tab no longer follows the Index tab's bucket filter.
+
 ## 1.15.0
 
 - **Tree shows every bucket.** The Tree tab's top level is now every bucket in the

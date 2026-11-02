@@ -638,22 +638,27 @@ def api_retention_expiry():
 
 @app.get("/api/retention/due")
 def api_retention_due():
+    # bucket: absent -> active bucket, "*" -> every bucket (an expiry set from
+    # the Tree can be in any of them), else that bucket.
     bucket = request.args.get("bucket") or config.BUCKET
+    one = None if bucket == "*" else bucket
     # scope=all lists everything scheduled, not just what's already due — so a
     # date set for next year is visible instead of looking like it didn't take.
     scope = (request.args.get("scope") or "due").lower()
     now = db.now()
-    due_rows = db.files_due(bucket, now)
-    rows = db.files_scheduled(bucket) if scope == "all" else due_rows
-    sched_count, sched_bytes = db.count_scheduled(bucket)
+    due_rows = db.files_due(one, now)
+    rows = db.files_scheduled(one) if scope == "all" else due_rows
+    sched_count, sched_bytes = db.count_scheduled(one)
     return jsonify({
         "bucket": bucket, "scope": scope,
         "due": len(due_rows),
         "due_bytes": sum(int(r["size"] or 0) for r in due_rows),
+        "due_buckets": sorted({r["bucket"] for r in due_rows}),
         "scheduled": sched_count, "scheduled_bytes": sched_bytes,
-        "next_expiry": db.next_expiry(bucket),
+        "next_expiry": db.next_expiry(one),
         "shown": len(rows[:500]), "truncated": len(rows) > 500,
-        "items": [{"key": r["key"], "size": r["size"], "expires_at": r["expires_at"],
+        "items": [{"bucket": r["bucket"], "key": r["key"], "size": r["size"],
+                   "expires_at": r["expires_at"],
                    "uploaded_at": r["uploaded_at"],
                    "early_days": retention.early_days(r),
                    "days_left": retention.days_left(r),
@@ -668,6 +673,8 @@ def api_retention_delete():
     as a typed confirmation. Writes a tombstone + log line for every object."""
     data = request.get_json(force=True)
     bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    if bucket == "*":
+        return jsonify({"error": "delete works on one bucket at a time"}), 400
     if (data.get("confirm") or "").strip() != bucket:
         return jsonify({"error": f"confirmation must equal the bucket name '{bucket}'"}), 400
     mode = "expiry" if data.get("due") else "manual"

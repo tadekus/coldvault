@@ -1247,42 +1247,75 @@ $("#btnTrDelete").onclick = async () => {
 };
 
 /* ---------- retention / deletion ---------- */
-let rtLast = null;   // last preview, so delete acts on exactly what was shown
-let rtCanDelete = null;   // delete permission for the Retention tab's bucket
+// The tab shows one bucket or all of them ("*", the default), so an expiry or
+// deletion made from the Tree in any bucket shows up here. Anything that
+// deletes still works on exactly one bucket: its typed confirmation is that
+// bucket's name.
+let rtLast = null;      // last preview, per bucket — delete acts on exactly what was shown
+let rtBuckets = [];     // every indexed bucket, for the "all buckets" view
 
-function rtBucket() { return $("#bucketFilter").value && $("#bucketFilter").value !== "*"
-  ? $("#bucketFilter").value : ($("#bucketBadge").dataset.bucket || ""); }
+function rtBucket() { return $("#rtBucket").value || "*"; }
+function rtTargets() { return rtBucket() === "*" ? rtBuckets : [rtBucket()]; }
+const rtCan = b => trPerm[b] === true;   // permission answers are shared with the Tree
 
-function rtBody(extra) {
-  return Object.assign({ bucket: rtBucket(), prefix: $("#rtPrefix").value.trim() }, extra || {});
+async function rtLoadBuckets() {
+  const sel = $("#rtBucket"), keep = sel.value || "*";
+  try {
+    const r = await api("/api/tree/buckets");
+    rtBuckets = r.buckets.map(b => b.bucket);
+  } catch (e) { /* keep the last list */ }
+  sel.innerHTML = `<option value="*">all buckets (${rtBuckets.length})</option>` +
+    rtBuckets.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
+  sel.value = keep === "*" || rtBuckets.includes(keep) ? keep : "*";
+}
+$("#rtBucket").onchange = () => { rtLast = null; $("#rtPreview").textContent = ""; loadRetention(); };
+
+function rtBody(bucket, extra) {
+  return Object.assign({ bucket, prefix: $("#rtPrefix").value.trim() }, extra || {});
 }
 
 $("#btnRtPreview").onclick = async () => {
+  if (!$("#rtPrefix").value.trim()) return alert("Enter a key prefix first");
   $("#rtPreview").textContent = "checking…";
   try {
-    const r = await api("/api/retention/preview", { body: rtBody() });
-    rtLast = r;
-    let h = `<b>${r.count.toLocaleString()}</b> object(s) · <b>${fmtBytes(r.bytes)}</b> under ` +
-            `<code>${esc(r.prefix || "(whole bucket)")}</code> in <code>${esc(r.bucket)}</code>`;
-    if (r.early_count) h += `<br><span style="color:var(--warn)">⚠ ${r.early_count} object(s) ` +
-      `(${fmtBytes(r.early_bytes)}) are younger than the ${r.min_days}-day minimum storage ` +
-      `duration — deleting them now still bills up to ${r.max_early_days} more day(s).</span>`;
-    if (r.versioning === "Enabled") h += `<br><span style="color:var(--warn)">⚠ bucket versioning is ` +
-      `ENABLED — deleting adds a delete marker; old versions keep costing until purged.</span>`;
-    if (r.sample.length) h += `<div class="mono" style="font-size:11px;margin-top:6px">` +
-      r.sample.slice(0, 15).map(s => esc(s.key)).join("<br>") +
-      (r.count > 15 ? `<br>… and ${(r.count - 15).toLocaleString()} more` : "") + `</div>`;
-    $("#rtPreview").innerHTML = h;
+    const all = await Promise.all(rtTargets().map(b =>
+      api("/api/retention/preview", { body: rtBody(b) })));
+    rtLast = all.filter(r => r.count > 0);
+    if (!rtLast.length) {
+      $("#rtPreview").textContent = `nothing under that prefix in ${
+        rtBucket() === "*" ? "any bucket" : rtBucket()}`;
+      return;
+    }
+    $("#rtPreview").innerHTML = rtLast.map(r => {
+      let h = `<b>${r.count.toLocaleString()}</b> object(s) · <b>${fmtBytes(r.bytes)}</b> under ` +
+              `<code>${esc(r.prefix || "(whole bucket)")}</code> in <code>${esc(r.bucket)}</code>`;
+      if (r.early_count) h += `<br><span style="color:var(--warn)">⚠ ${r.early_count} object(s) ` +
+        `(${fmtBytes(r.early_bytes)}) are younger than the ${r.min_days}-day minimum storage ` +
+        `duration — deleting them now still bills up to ${r.max_early_days} more day(s).</span>`;
+      if (r.versioning === "Enabled") h += `<br><span style="color:var(--warn)">⚠ bucket versioning is ` +
+        `ENABLED — deleting adds a delete marker; old versions keep costing until purged.</span>`;
+      if (r.sample.length) h += `<div class="mono" style="font-size:11px;margin-top:6px">` +
+        r.sample.slice(0, 15).map(s => esc(s.key)).join("<br>") +
+        (r.count > 15 ? `<br>… and ${(r.count - 15).toLocaleString()} more` : "") + `</div>`;
+      return `<div style="margin-bottom:6px">${h}</div>`;
+    }).join("");
   } catch (e) { rtLast = null; $("#rtPreview").textContent = "✘ " + e.message; }
 };
 
 async function rtSetExpiry(date) {
   if (!$("#rtPrefix").value.trim()) return alert("Enter a prefix first (then Preview to check it)");
   $("#rtExpiryResult").textContent = "applying…";
+  let n = 0;
+  const hit = [];
   try {
-    const r = await api("/api/retention/expiry", { body: rtBody({ date }) });
-    $("#rtExpiryResult").textContent = `✔ ${r.updated} object(s) — expiry ${r.expires_at || "cleared"}`;
-    loadRetention();
+    for (const b of rtTargets()) {
+      const r = await api("/api/retention/expiry", { body: rtBody(b, { date }) });
+      n += r.updated;
+      if (r.updated) hit.push(b);
+    }
+    $("#rtExpiryResult").textContent = `✔ ${n} object(s) — expiry ${date || "cleared"}`
+      + (hit.length ? ` (in ${hit.join(", ")})` : "");
+    loadRetention(true);
   } catch (e) { $("#rtExpiryResult").textContent = "✘ " + e.message; }
 }
 $("#btnRtSetExpiry").onclick = () => {
@@ -1292,104 +1325,142 @@ $("#btnRtSetExpiry").onclick = () => {
 };
 $("#btnRtClearExpiry").onclick = () => rtSetExpiry(null);
 
+let rtDueBuckets = [];   // buckets with something due, from the last schedule load
+
 async function rtDelete({ due }) {
-  const bucket = rtBucket();
-  const what = due
-    ? `every object currently DUE for expiry in ${bucket}`
-    : (rtLast ? `${rtLast.count} object(s) (${fmtBytes(rtLast.bytes)}) under "${rtLast.prefix || "(whole bucket)"}"` : null);
-  if (!due && !rtLast) return alert("Preview first — delete acts on exactly what the preview showed");
-  if (!due && rtLast.count === 0) return alert("The preview matched nothing");
-  const early = !due && rtLast.early_count
-    ? `\n\n${rtLast.early_count} of them are inside the ${rtLast.min_days}-day minimum storage duration, so you will still be billed for up to ${rtLast.max_early_days} more day(s).` : "";
+  let bucket, what, early = "";
+  if (due) {
+    const cands = rtBucket() === "*" ? rtDueBuckets : rtDueBuckets.filter(b => b === rtBucket());
+    if (!cands.length) return alert("Nothing is due");
+    if (cands.length > 1)
+      return alert(`Objects are due in ${cands.length} buckets (${cands.join(", ")}).\n\n`
+                 + `Delete works on one bucket at a time — pick it in the Bucket list above.`);
+    bucket = cands[0];
+    what = `every object currently DUE for expiry in ${bucket}`;
+  } else {
+    if (!rtLast) return alert("Preview first — delete acts on exactly what the preview showed");
+    if (!rtLast.length) return alert("The preview matched nothing");
+    if (rtLast.length > 1)
+      return alert(`The preview matched objects in ${rtLast.length} buckets (${rtLast.map(r => r.bucket).join(", ")}).\n\n`
+                 + `Delete works on one bucket at a time — pick it in the Bucket list above and preview again.`);
+    const p = rtLast[0];
+    bucket = p.bucket;
+    what = `${p.count} object(s) (${fmtBytes(p.bytes)}) under "${p.prefix || "(whole bucket)"}" in ${bucket}`;
+    if (p.early_count) early = `\n\n${p.early_count} of them are inside the ${p.min_days}-day minimum storage duration, so you will still be billed for up to ${p.max_early_days} more day(s).`;
+  }
+  if (trPerm[bucket] === false) return alert(`This IAM user cannot delete from ${bucket}.`);
   if (!confirm(`PERMANENTLY DELETE ${what} from S3?${early}\n\nThis cannot be undone.`)) return;
-  const typed = prompt(`This is irreversible.\n\nType the bucket name to confirm:`, "");
+  const typed = prompt(`This is irreversible.\n\nType the bucket name (${bucket}) to confirm:`, "");
   if (typed === null) return;
   const el = due ? $("#rtDueResult") : $("#rtDeleteResult");
   el.textContent = "deleting…";
   try {
     const body = due
       ? { bucket, due: true, confirm: typed.trim(), reason: $("#rtReason").value.trim() }
-      : rtBody({ confirm: typed.trim(), reason: $("#rtReason").value.trim() });
+      : rtBody(bucket, { confirm: typed.trim(), reason: $("#rtReason").value.trim() });
     const r = await api("/api/retention/delete", { body });
-    let msg = `✔ deleted ${r.deleted} object(s) · ${fmtBytes(r.bytes)} freed`;
+    let msg = `✔ deleted ${r.deleted} object(s) from ${bucket} · ${fmtBytes(r.bytes)} freed`;
     if (r.early) msg += ` · ${r.early} within the minimum duration (still billed)`;
     if (r.failed) msg += ` · ✘ ${r.failed} failed`;
     if (r.versioning === "Enabled") msg += " · versioning on: delete markers added, versions remain";
     el.textContent = msg;
     rtLast = null;
-    loadRetention();
+    loadRetention(true);
     if (activeTab === "files") loadFiles();
   } catch (e) { el.textContent = "✘ " + e.message; }
 }
 $("#btnRtDelete").onclick = () => rtDelete({ due: false });
 $("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });
 $("#btnRtDueRefresh").onclick = () => loadRetention();
-$("#rtDueScope").onchange = () => loadRetention();
+$("#rtDueScope").onchange = () => loadRetention(true);
 
-// Unschedule everything in the current list in one call — clearing a folder's
+// Clear the expiry on the given rows, one call per bucket.
+async function rtUnset(rows) {
+  const by = new Map();
+  rows.forEach(r => (by.get(r.bucket) || by.set(r.bucket, []).get(r.bucket)).push(r.key));
+  let n = 0;
+  for (const [bucket, keys] of by)
+    n += (await api("/api/retention/expiry", { body: { bucket, keys, date: null } })).updated;
+  return n;
+}
+const rtRowsOf = btns => [...btns].map(b => ({ bucket: b.dataset.bucket, key: b.dataset.key }));
+
+// Unschedule everything in the current list in one go — clearing a folder's
 // worth of objects a row at a time is a lot of clicking (and a lot of log lines).
 $("#btnRtUnsetAll").onclick = async () => {
-  const keys = [...$("#rtDueTable").querySelectorAll(".rtUnset")].map(b => b.dataset.key);
-  if (!keys.length) return;
-  if (!confirm(`Clear the expiry date on ${keys.length} object(s)?\n\n`
+  const rows = rtRowsOf($("#rtDueTable").querySelectorAll(".rtUnset"));
+  if (!rows.length) return;
+  if (!confirm(`Clear the expiry date on ${rows.length} object(s)?\n\n`
              + `This only unschedules them — no data is touched.`)) return;
   $("#rtDueResult").textContent = "clearing…";
   try {
-    const r = await api("/api/retention/expiry", {
-      body: { bucket: rtBucket(), keys, date: null } });
-    $("#rtDueResult").textContent = `✔ expiry cleared for ${r.updated.toLocaleString()} object(s)`;
+    const n = await rtUnset(rows);
+    $("#rtDueResult").textContent = `✔ expiry cleared for ${n.toLocaleString()} object(s)`;
     loadRetention(true);
   } catch (e) { $("#rtDueResult").textContent = "✘ " + e.message; }
 };
 
+function rtPermBanner(r) {
+  if (r.can_delete === true)
+    return `<div class="banner warn">⚠ This IAM user <b>CAN permanently delete</b> from
+      <code>${esc(r.bucket)}</code>. Deletions here are irreversible.</div>`;
+  if (r.can_delete === false)
+    return `<div class="banner ok">🔒 Append-only: this IAM user <b>cannot delete</b> from
+      <code>${esc(r.bucket)}</code>, so nothing here can remove its archive.</div>`;
+  return `<div class="banner warn">Delete permission for <code>${esc(r.bucket)}</code> unknown:
+    ${esc(r.detail || "not probed")}</div>`;
+}
+
+// One probe per bucket, ever: the server caches each answer, so this only
+// costs a call for a bucket that has never been checked (or on Re-check).
 async function loadRetentionPermission(recheck) {
   const el = $("#rtPerm");
+  const targets = rtTargets();
+  if (!targets.length) { el.style.display = "none"; return; }
   el.style.display = "";
   el.innerHTML = `<div class="muted">${recheck ? "re-probing" : "checking"} delete permission…</div>`;
-  try {
-    const r = await api(`/api/retention/permission?${recheck ? "recheck=1&" : ""}bucket=`
-                        + encodeURIComponent(rtBucket()));
-    rtCanDelete = r.can_delete;
-    trPerm[r.bucket] = r.can_delete;
-    const dis = r.can_delete !== true;
-    $("#btnRtDelete").disabled = dis;
-    $("#btnRtDeleteDue").disabled = dis;
-    const foot = `<div class="muted" style="margin-top:6px">
-        ${r.checked_at ? `Probed ${esc(r.checked_at)} and remembered — ColdVault does not re-probe
-           on its own.` : ""}
-        <button id="btnRtRecheck" class="secondary" style="margin-left:6px">Re-check</button></div>`;
-    if (r.can_delete === true) {
-      el.innerHTML = `<div class="banner warn">⚠ This IAM user <b>CAN permanently delete</b> from
-        <code>${esc(r.bucket)}</code>. Deletions here are irreversible.</div>
-        <div class="muted" style="margin-top:6px">To make ColdVault strictly append-only, remove
-        <code>s3:DeleteObject</code> from the IAM policy — every other feature keeps working.</div>${foot}`;
-    } else if (r.can_delete === false) {
-      el.innerHTML = `<div class="banner ok">🔒 Append-only: this IAM user <b>cannot delete</b> from
-        <code>${esc(r.bucket)}</code>, so nothing here can remove your archive.</div>
-        <div class="muted" style="margin-top:6px">Scheduling expiry still works (it only flags what's due).
-        To enable deletion, grant <code>s3:DeleteObject</code> on <code>arn:aws:s3:::${esc(r.bucket)}/*</code>.</div>${foot}`;
-    } else {
-      el.innerHTML = `<div class="banner warn">Delete permission unknown: ${esc(r.detail || "not probed")}</div>${foot}`;
-    }
-    $("#btnRtRecheck").onclick = () => loadRetentionPermission(true);
-  } catch (e) {
-    el.innerHTML = `<div class="muted">permission check failed: ${esc(e.message)}</div>`;
-  }
+  const res = await Promise.all(targets.map(b =>
+    api(`/api/retention/permission?${recheck ? "recheck=1&" : ""}bucket=` + encodeURIComponent(b))
+      .catch(e => ({ bucket: b, can_delete: null, detail: e.message }))));
+  res.forEach(r => trPerm[r.bucket] = r.can_delete);
+  const anyCan = res.some(r => r.can_delete === true);
+  $("#btnRtDelete").disabled = !anyCan;
+  const stamps = res.map(r => r.checked_at).filter(Boolean).sort();
+  const foot = `<div class="muted" style="margin-top:6px">
+      ${stamps.length ? `Probed ${esc(stamps[stamps.length - 1])} and remembered — ColdVault does not
+         re-probe on its own.` : ""}
+      <button id="btnRtRecheck" class="secondary" style="margin-left:6px">Re-check</button></div>`;
+  let help = "";
+  if (anyCan) help = `<div class="muted" style="margin-top:6px">To make ColdVault strictly
+      append-only, remove <code>s3:DeleteObject</code> from the IAM policy — every other feature
+      keeps working.</div>`;
+  else if (res.some(r => r.can_delete === false)) help = `<div class="muted" style="margin-top:6px">
+      Scheduling expiry still works (it only flags what's due). To enable deletion, grant
+      <code>s3:DeleteObject</code> on <code>arn:aws:s3:::&lt;bucket&gt;/*</code>.</div>`;
+  el.innerHTML = `<div style="display:grid;gap:6px">${res.map(rtPermBanner).join("")}</div>${help}${foot}`;
+  $("#btnRtRecheck").onclick = () => loadRetentionPermission(true);
 }
 
 async function loadRetention(skipPerm) {
-  if (!skipPerm) loadRetentionPermission();
+  await rtLoadBuckets();
+  const b = rtBucket();
+  // The permission probe (first visit to a bucket only) mustn't hold up the table.
+  const perm = skipPerm ? null : loadRetentionPermission();
   try {
     const scope = $("#rtDueScope").value;
     const [due, del] = await Promise.all([
-      api(`/api/retention/due?scope=${scope}&bucket=` + encodeURIComponent(rtBucket())),
-      api("/api/deletions?bucket=" + encodeURIComponent(rtBucket())),
+      api(`/api/retention/due?scope=${scope}&bucket=` + encodeURIComponent(b)),
+      api("/api/deletions?bucket=" + encodeURIComponent(b)),
     ]);
+    rtDueBuckets = due.due_buckets || [];
+    const where = b === "*" ? ` across ${rtBuckets.length} bucket(s)` : "";
     $("#rtDueCount").textContent =
-      `— ${due.due} due now (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})`
+      `— ${due.due} due now (${fmtBytes(due.due_bytes)}) of ${due.scheduled} scheduled (${fmtBytes(due.scheduled_bytes)})${where}`
       + (due.next_expiry && !due.due ? ` · earliest ${due.next_expiry.slice(0, 10)}` : "");
-    $("#btnRtDeleteDue").disabled = due.due === 0 || rtCanDelete !== true;
+    if (perm) perm.then(() => { $("#btnRtDeleteDue").disabled = !rtDueBuckets.some(rtCan); });
+    $("#btnRtDeleteDue").disabled = !rtDueBuckets.some(rtCan);
     $("#rtDueTable tbody").innerHTML = due.items.map(i => `<tr${i.due ? "" : ' style="opacity:.8"'}>
+        <td class="mono">${esc(i.bucket)}</td>
         <td class="key">${esc(i.key)}</td>
         <td class="num" title="${(i.size || 0).toLocaleString()} bytes">${fmtBytes(i.size)}</td>
         <td class="mono">${esc(i.uploaded_at || "—")}</td>
@@ -1397,9 +1468,9 @@ async function loadRetention(skipPerm) {
         <td class="num">${i.due ? `<span style="color:var(--warn)">due</span>`
                                 : `${(i.days_left ?? 0).toLocaleString()}d`}</td>
         <td class="num">${i.early_days ? `<span style="color:var(--warn)">${i.early_days}d billed</span>` : "—"}</td>
-        <td><button class="secondary rtUnset" data-key="${esc(i.key)}"
+        <td><button class="secondary rtUnset" data-bucket="${esc(i.bucket)}" data-key="${esc(i.key)}"
                     title="remove this object's expiry date">clear</button></td>
-      </tr>`).join("") || `<tr><td colspan="7" class="muted" style="padding:20px">${
+      </tr>`).join("") || `<tr><td colspan="8" class="muted" style="padding:20px">${
         due.scheduled
           ? (scope === "due"
               ? `nothing is due yet — ${due.scheduled.toLocaleString()} object(s) are scheduled${
@@ -1410,19 +1481,18 @@ async function loadRetention(skipPerm) {
       }</td></tr>`;
     if (due.truncated) {
       $("#rtDueTable tbody").insertAdjacentHTML("beforeend",
-        `<tr><td colspan="7" class="muted">showing the first 500 of ${due.scheduled.toLocaleString()}</td></tr>`);
+        `<tr><td colspan="8" class="muted">showing the first 500 of ${due.scheduled.toLocaleString()}</td></tr>`);
     }
-    $("#rtDueTable").querySelectorAll(".rtUnset").forEach(b => b.onclick = async () => {
-      b.disabled = true;
+    $("#rtDueTable").querySelectorAll(".rtUnset").forEach(btn => btn.onclick = async () => {
+      btn.disabled = true;
       try {
-        await api("/api/retention/expiry", { body: {
-          bucket: rtBucket(), keys: [b.dataset.key], date: null } });
+        await rtUnset(rtRowsOf([btn]));
         loadRetention(true);   // just the table — no need to re-check permission
-      } catch (e) { b.disabled = false; alert("✘ " + e.message); }
+      } catch (e) { btn.disabled = false; alert("✘ " + e.message); }
     });
 
     const t = del.totals;
-    $("#rtDelTotals").textContent = `— ${t.count} object(s), ${fmtBytes(t.bytes)} removed${t.early ? `, ${t.early} early` : ""}`;
+    $("#rtDelTotals").textContent = `— ${t.count} object(s), ${fmtBytes(t.bytes)} removed${t.early ? `, ${t.early} early` : ""}${where}`;
     $("#rtDeletionsTable tbody").innerHTML = del.items.map(d => `<tr>
         <td class="mono">${esc(d.deleted_at || "")}</td>
         <td class="mono">${esc(d.bucket || "")}</td>

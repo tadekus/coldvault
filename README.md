@@ -572,6 +572,12 @@ Archive objects stay cold.
 The **Retention** tab manages the end of an archive's life. Deleting is the only
 irreversible thing ColdVault does, so it is deliberately a three-step flow.
 
+The **Bucket** picker at the top defaults to **all buckets**, so an expiry or deletion
+made from the Tree shows up here whichever bucket it's in. The expiry schedule and the
+deletion log both have a Bucket column, and the permission panel has one line per bucket.
+Preview and expiry work across buckets too. **Deleting always takes one bucket**: if a
+preview, or what's due, spans several buckets, pick the one you mean in the picker first.
+
 1. **Select and preview.** Enter a key prefix — a folder in the archive, e.g.
    `SSD01/SD01_20261005_MON/CAMERA_FILES/` — and press **Preview**. You get the exact
    object count and total size, a sample of the keys, and two cost warnings where they

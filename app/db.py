@@ -558,28 +558,37 @@ def set_expiry(bucket, keys, when):
     return n
 
 
+def _in_bucket(bucket):
+    """WHERE fragment for an optional bucket filter: None means every bucket."""
+    return ("bucket=? AND ", [bucket]) if bucket else ("", [])
+
+
 def files_due(bucket, as_of):
-    return _rows("SELECT * FROM files WHERE bucket=? AND expires_at IS NOT NULL "
-                 "AND expires_at <= ? ORDER BY expires_at, key", (bucket, as_of))
+    w, p = _in_bucket(bucket)
+    return _rows(f"SELECT * FROM files WHERE {w}expires_at IS NOT NULL "
+                 f"AND expires_at <= ? ORDER BY expires_at, bucket, key", p + [as_of])
 
 
 def files_scheduled(bucket, limit=1000):
     """Everything with a planned deletion date — due or not — soonest first.
     `files_due` only answers 'what can I delete now'; this answers 'what have I
-    scheduled', which is what you want right after setting an expiry."""
-    return _rows("SELECT * FROM files WHERE bucket=? AND expires_at IS NOT NULL "
-                 "ORDER BY expires_at, key LIMIT ?", (bucket, limit))
+    scheduled', which is what you want right after setting an expiry.
+    bucket=None covers every bucket."""
+    w, p = _in_bucket(bucket)
+    return _rows(f"SELECT * FROM files WHERE {w}expires_at IS NOT NULL "
+                 f"ORDER BY expires_at, bucket, key LIMIT ?", p + [limit])
 
 
 def next_expiry(bucket):
-    r = _row("SELECT MIN(expires_at) e FROM files WHERE bucket=? "
-             "AND expires_at IS NOT NULL", (bucket,))
+    w, p = _in_bucket(bucket)
+    r = _row(f"SELECT MIN(expires_at) e FROM files WHERE {w}expires_at IS NOT NULL", p)
     return r["e"] if r else None
 
 
 def count_scheduled(bucket):
-    r = _row("SELECT COUNT(*) c, COALESCE(SUM(size),0) b FROM files "
-             "WHERE bucket=? AND expires_at IS NOT NULL", (bucket,))
+    w, p = _in_bucket(bucket)
+    r = _row(f"SELECT COUNT(*) c, COALESCE(SUM(size),0) b FROM files "
+             f"WHERE {w}expires_at IS NOT NULL", p)
     return r["c"], r["b"]
 
 

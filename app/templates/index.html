@@ -348,6 +348,12 @@
 
 <!-- ================= RETENTION ================= -->
 <section id="tab-retention" class="panel">
+  <div class="row toolbar">
+    <label for="rtBucket" class="muted">Bucket</label>
+    <select id="rtBucket" title="which bucket's expiry schedule and deletions to show"></select>
+    <span class="muted" style="font-size:12px">Expiry and deletions set from the Tree show up
+      here for whichever bucket they're in. Deleting always takes one bucket at a time.</span>
+  </div>
   <div id="rtPerm" class="box" style="display:none"></div>
   <div class="box">
     <h3>Select objects</h3>
@@ -401,7 +407,7 @@
     </div>
     <div class="tablewrap">
       <table id="rtDueTable">
-        <thead><tr><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th>
+        <thead><tr><th>Bucket</th><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th>
           <th>In</th><th>Early-delete</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
