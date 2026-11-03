@@ -115,7 +115,10 @@ Everything below is run from the ColdVault folder (e.g. `~/coldvault`). On macOS
 `-f docker-compose.mac.yml` to every command.
 
 ```bash
-# restart (after changing .env, or if it got stuck)
+# apply .env changes (recreates the container with the new settings)
+docker compose up -d
+
+# restart as-is (if it got stuck)
 docker compose restart
 
 # stop / start
@@ -124,6 +127,7 @@ docker compose up -d
 
 # update to the latest version from GitHub, then rebuild and restart
 git pull
+./env-check.sh          # anything new in .env.example?
 docker compose up -d --build
 
 # follow the logs
@@ -137,9 +141,10 @@ docker compose ps
 
 Notes:
 
-- `docker compose restart` reloads `.env`, but **volume changes need
-  `docker compose up -d`** (recreates the container); add `--force-recreate` if a
-  change doesn't seem to take.
+- **`.env` and volume changes need `docker compose up -d`**, which recreates the
+  container. `docker compose restart` restarts the existing container with the settings
+  it was created with, so an edited `.env` is *not* picked up. Add `--force-recreate`
+  if a change doesn't seem to take.
 - Rebuild with `--build` whenever the app code or `requirements.txt` changed —
   i.e. after every `git pull`.
 - **Machine-specific source-folder mounts go in `docker-compose.override.yml`**, not
@@ -150,9 +155,14 @@ Notes:
   `docker compose up -d`.
 - After an update, **hard-refresh the browser** (Ctrl+Shift+R, Cmd+Shift+R on macOS)
   so the new UI assets load instead of the cached ones.
-- New releases sometimes add settings to `.env.example`. Compare it with your `.env`
-  after pulling: `diff <(sort .env.example) <(sort .env) | head -30` — anything
-  missing falls back to a sane default, so this is optional but worth a look.
+- New releases sometimes add settings to `.env.example`. After pulling, run
+  **`./env-check.sh`**. It lists the settings your `.env` doesn't mention, with their
+  default and explanation, and any setting in your `.env` that ColdVault doesn't know
+  (usually a typo). It reads only setting *names* from your `.env`, so your keys are
+  never printed. `./env-check.sh --append` adds the new settings to the end of `.env`
+  **commented out**: nothing changes until you uncomment one, and the next check comes
+  back clean. A setting you don't have simply uses its default, so this is about
+  knowing what's available, not fixing anything.
 - Your `.env`, `docker-compose.override.yml`, index database (`data/`) and downloaded
   files (`downloads/`) are never touched by updates — they are git-ignored.
 - Uploads or downloads interrupted by a restart are marked failed and can simply be

@@ -1,5 +1,7 @@
 .env
 data/
+downloads/
+backups/
 __pycache__/
 *.pyc
 .git/

@@ -4,6 +4,26 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.17.1
+
+- **`env-check.sh`** — run it after `git pull` to see what's new in
+  `.env.example`. It lists the settings your `.env` doesn't mention (grouped by
+  section, with their default and explanation) and any setting in your `.env`
+  that `.env.example` doesn't know, which usually means a typo or a rename.
+  - Only setting names are read from `.env`; values (your keys) are never
+    printed. This replaces the README's old `diff` tip, which printed both files
+    in full, secrets included.
+  - `--append` adds the new settings to the end of `.env` **commented out**. The
+    configuration doesn't change (verified: ColdVault parses identically before
+    and after). Commented-out settings count as seen, so the next check is
+    clean.
+  - Exit status 0/1/2 (clean / something listed / error), for use in scripts.
+    Works with GNU and BSD tools: tested on Debian 12 (`mawk`) and macOS.
+- README: `docker compose restart` does **not** apply `.env` changes. The
+  container keeps the environment it was created with; use `docker compose up
+  -d`. The old note said otherwise.
+- `downloads/` and `backups/` are excluded from the Docker build context.
+
 ## 1.17.0
 
 - **Local backup of ColdVault's own data.** A new **Settings** tab (it replaces the
