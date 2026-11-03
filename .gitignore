@@ -1,5 +1,6 @@
 .env
 data/
+backups/
 downloads/*
 !downloads/.gitkeep
 __pycache__/

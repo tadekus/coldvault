@@ -62,6 +62,8 @@ everything it does.
 - **Everything logged** — every `aws` command, upload, skip, failure, canary event and
   restore transition goes to the UI log, a rotating log file (`data/coldvault.log`) and
   the SQLite events table.
+- **Local backup of its own state** — a daily, consistent snapshot of the database,
+  logs and config in `./backups/latest`, ready for rsync, borg or restic.
 
 ## Installation
 
@@ -670,6 +672,72 @@ on demand** (runs an audit now and mails it) and **Send a test email** to verify
 setup. The sender address must be on a domain verified in your Resend account (or use
 `onboarding@resend.dev` for a quick test).
 
+## Backing up ColdVault itself
+
+S3 holds your files, but the **index** — checksums verified at upload, offload-manifest
+results, sessions, restore history, deletion records, settings — exists only in
+ColdVault's SQLite database. S3 can't give it back. **Settings → Backup** looks after it.
+
+Don't point rsync, borg or restic at the live `data/coldvault.db`: a copy taken while
+ColdVault is writing can be a half-written, corrupt file. ColdVault instead writes its
+own consistent snapshot (SQLite's online backup API, then `PRAGMA integrity_check`) to
+the backup folder, `./backups` on the host (mounted at `/backups`):
+
+```
+backups/
+  latest/                 newest complete snapshot — back THIS up
+    coldvault.db          the database, integrity-checked
+    files.csv             the index as plain text (bucket, key, size, sha256, …)
+    deletions.csv         every deletion tombstone
+    coldvault.log*        the logs
+    config.json           effective settings, with credentials left out
+    backup.json           manifest: time, version, row counts, sha256 of each file
+  history/<date_time>/    the last N snapshots (hard links, cheap on space)
+```
+
+A snapshot is built in a hidden folder and swapped in only once it is complete and
+checked, so `latest/` is never half-written. A failed backup leaves the previous
+`latest/` in place. Files stay uncompressed so borg and restic can deduplicate
+between runs (gzip would defeat that). The CSVs mean the index is readable even
+without SQLite.
+
+**When it runs.** Daily at 03:00 local time by default, keeping 7 snapshots in
+`history/`. Change both in Settings (saved in the database, overriding `.env`), or set
+`COLDVAULT_BACKUP_AT` / `COLDVAULT_BACKUP_KEEP`. An empty time means on demand only. If
+the container was down at the scheduled time, the backup runs when it comes back; a
+failed backup is retried an hour later. **Back up now** takes one immediately.
+
+**Hooking up your tool.** The safest way is to ask ColdVault for a fresh snapshot right
+before your tool runs. `POST /api/backup` returns only once the snapshot is finished,
+and returns HTTP 500 if it failed, so `curl -f` stops the chain:
+
+```bash
+# e.g. in a host crontab
+curl -fsS -X POST http://localhost:9999/api/backup \
+  && restic -r /mnt/nas/restic backup ~/coldvault/backups/latest
+curl -fsS -X POST http://localhost:9999/api/backup \
+  && borg create /mnt/nas/borg::coldvault-{now} ~/coldvault/backups/latest
+curl -fsS -X POST http://localhost:9999/api/backup \
+  && rsync -a --delete ~/coldvault/backups/ nas:/backups/coldvault/
+```
+
+Alternatively, schedule your tool for some time after the daily backup. Files are
+written by the container (as root) but are world-readable, so your tool doesn't need
+root to read them.
+
+**Not included:** your `.env`. It holds the AWS keys and the Resend key, which
+ColdVault deliberately never copies. It lives on the host, so add it to your tool's
+backup set (encrypted, ideally).
+
+**Restoring:** stop ColdVault, copy `backups/latest/coldvault.db` over
+`data/coldvault.db`, start ColdVault. Then bring it up to date with S3:
+- **Import bucket → index** picks up anything uploaded after the snapshot. Those objects
+  come back as `remote`, without their upload-time checksums.
+- **Audit bucket** flags anything the snapshot lists that is no longer there.
+
+`/health` reports a `backup` block and turns to `attention` if the last backup failed,
+or if a scheduled backup hasn't succeeded in two days.
+
 ## Health / monitoring endpoint
 
 `GET /health` returns a JSON snapshot of upload, restore and download activity plus
@@ -681,8 +749,8 @@ curl -s http://localhost:9999/health | jq
 ```
 
 Top-level `status` is **`ok`** (idle, healthy), **`busy`** (an upload/download is running
-or queued), or **`attention`** (failed uploads, manifest mismatches, or audit issues
-need looking at). Options:
+or queued), or **`attention`** (failed uploads, manifest mismatches, audit issues, or a
+failed/stale local backup need looking at). Options:
 
 - `?strict=1` — return HTTP **503** when `status` is `attention` (so a monitor alerts),
   otherwise **200**.
@@ -695,7 +763,8 @@ with `files_done/total`, `bytes_done/total`, `percent`, and `last_session` summa
 `restores` (`in_progress`, `completed`, `failed`, `last_checked`); `downloads` (`running`,
 `current_session`, `queued`); and `integrity` (`failed_uploads`, `manifest_mismatch`,
 `audit_missing`, `audit_size_mismatch`, `audit_class_drift`). Integrity counts are for
-the active bucket.
+the active bucket. `backup` has `scheduled`, `last_ok`, `last_at`, `last_error` and
+`stale`; a failed or stale backup also sets `status` to `attention`.
 
 ## Performance tuning
 

@@ -39,7 +39,8 @@ function manifestBadge(state) {
 
 /* ---------- tabs ---------- */
 const loaders = { dashboard: loadDashboard, files: loadFiles, sessions: loadSessions,
-                  restores: loadRestores, downloads: loadDownloads, notify: loadNotify,
+                  restores: loadRestores, downloads: loadDownloads,
+                  settings: () => { loadBackup(); loadNotify(); },
                   tree: loadTree, retention: loadRetention, logs: loadLogs };
 let activeTab = "dashboard";
 
@@ -177,6 +178,68 @@ $("#btnAudit").onclick = async () => {
   } catch (e) {
     $("#auditResult").textContent = "✘ " + e.message;
   }
+};
+
+/* ---------- backup (Settings tab) ---------- */
+async function loadBackup() {
+  let b;
+  try { b = await api("/api/backup"); }
+  catch (e) { $("#bkInfo").innerHTML = `<div class="muted">error: ${esc(e.message)}</div>`; return; }
+  $("#bkDir2").textContent = b.dir;
+  const where = !b.exists
+    ? `<span style="color:var(--warn)">⚠ doesn't exist yet — it's created on the first backup</span>`
+    : !b.writable
+      ? `<span style="color:var(--err)">✘ not writable — backups will fail</span>`
+      : b.in_docker && !b.mounted
+        ? `<span style="color:var(--err)">✘ not a mounted folder — backups would stay inside the
+           container and vanish with it. Add <code>./backups:${esc(b.dir)}</code> to the compose volumes.</span>`
+        : `<span style="color:var(--ok)">✔ ready</span>` +
+          (b.free_bytes != null ? ` <span class="muted">· ${fmtBytes(b.free_bytes)} free</span>` : "");
+  const l = b.last;
+  const last = !l ? `<span class="muted">never</span>`
+    : l.ok
+      ? `<span style="color:var(--ok)">✔ ${esc(l.finished_at)}</span> <span class="muted">· ${fmtBytes(l.bytes)}
+         · ${l.seconds}s · ${esc(l.trigger)}</span>`
+      : `<span style="color:var(--err)">✘ ${esc(l.finished_at)} — ${esc(l.error || "failed")}</span>`;
+  const lt = b.latest;
+  $("#bkInfo").innerHTML = `
+    <div><b>Folder</b><span><code>${esc(b.dir)}</code> ${where}</span></div>
+    <div><b>Schedule</b><span>${b.at
+      ? `daily at ${esc(b.at)} · next ${esc(b.next_run || "—")}`
+      : `<span class="muted">on demand only</span>`}
+      <span class="muted">· ${b.keep} kept in history${b.history.length ? ` (${b.history.length} now)` : ""}</span></span></div>
+    <div><b>Last backup</b><span>${last}</span></div>` +
+    (lt ? `<div><b>In latest/</b><span class="muted">${Object.entries(lt.files).map(([n, sz]) =>
+            `<code>${esc(n)}</code> ${fmtBytes(sz)}`).join(" · ")}
+            — ${(lt.rows.files || 0).toLocaleString()} indexed objects,
+            ${(lt.rows.deletions || 0).toLocaleString()} deletion records</span></div>` : "");
+  // Don't clobber what's being typed if this refreshes while editing.
+  if (document.activeElement !== $("#bkAt")) $("#bkAt").value = b.at || "";
+  if (document.activeElement !== $("#bkKeep")) $("#bkKeep").value = b.keep;
+  $("#btnBkNow").disabled = b.running;
+}
+
+async function saveBackupSchedule(at) {
+  try {
+    const r = await api("/api/backup/settings", { body: { at, keep: +$("#bkKeep").value } });
+    $("#bkResult").innerHTML = `<span style="color:var(--ok)">✔ ${r.at
+      ? `daily at ${esc(r.at)}, next ${esc(r.next_run || "—")}` : "schedule off — on demand only"},
+      keeping ${r.keep} in history</span>`;
+    loadBackup();
+  } catch (e) { $("#bkResult").textContent = "✘ " + e.message; }
+}
+$("#btnBkSave").onclick = () => saveBackupSchedule($("#bkAt").value);
+$("#btnBkOff").onclick = () => saveBackupSchedule("");
+
+$("#btnBkNow").onclick = async () => {
+  $("#btnBkNow").disabled = true;
+  $("#bkResult").textContent = "backing up…";
+  try {
+    const r = await api("/api/backup", { body: { trigger: "manual" } });
+    $("#bkResult").innerHTML = `<span style="color:var(--ok)">✔ snapshot written to
+      <code>${esc(r.path)}</code> · ${fmtBytes(r.bytes)} in ${r.seconds}s</span>`;
+  } catch (e) { $("#bkResult").textContent = "✘ " + e.message; }
+  loadBackup();
 };
 
 async function loadNotify() {

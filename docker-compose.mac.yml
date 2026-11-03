@@ -21,6 +21,9 @@ services:
       - ./data:/data
       # Restored files land here (read-write)
       - ./downloads:/downloads
+      # Snapshots of ColdVault's own database, logs and config (see Settings →
+      # Backup). Point rsync/borg/restic at ./backups/latest.
+      - ./backups:/backups
       # /Volumes -> /media with rslave so drives mounted after the container
       # started can propagate in. NOTE: on macOS, Docker Desktop runs a Linux VM
       # and shares /Volumes over VirtioFS, so hot-plug visibility is best-effort —

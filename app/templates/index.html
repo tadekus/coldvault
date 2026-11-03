@@ -19,7 +19,7 @@
     <button class="tab" data-tab="tree">Tree</button>
     <button class="tab" data-tab="retention">Retention</button>
     <button class="tab" data-tab="logs">Logs</button>
-    <button class="tab tab-right" data-tab="notify">✉ Notifications</button>
+    <button class="tab tab-right" data-tab="settings">⚙ Settings</button>
   </nav>
   <div class="bucket" id="bucketBadge">—</div>
 </header>
@@ -425,7 +425,48 @@
 </section>
 
 <!-- ================= NOTIFICATIONS ================= -->
-<section id="tab-notify" class="panel">
+<section id="tab-settings" class="panel">
+  <div class="box">
+    <h3>Backup of ColdVault's own data</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      The index — checksums verified at upload, manifest results, sessions, restores,
+      deletion records and settings — exists only in ColdVault's database; S3 can't give
+      it back. ColdVault writes a consistent snapshot of it (plus CSV copies, logs and the
+      non-secret config) to <code>latest/</code> in the backup folder. Point rsync, borg
+      or restic at that folder, <b>not</b> at the live <code>data/coldvault.db</code>,
+      which can be caught half-written.
+    </div>
+    <div id="bkInfo" class="kv">loading…</div>
+    <div class="row">
+      <label class="muted" for="bkAt">Daily at</label>
+      <input id="bkAt" type="time" style="width:120px" title="local time; clear it for on-demand only">
+      <label class="muted" for="bkKeep">keep</label>
+      <input id="bkKeep" type="number" min="0" max="365" style="width:70px"
+             title="snapshots kept under history/ (0 = only latest/)">
+      <span class="muted">in history</span>
+      <button id="btnBkSave" class="secondary">Save schedule</button>
+      <button id="btnBkOff" class="secondary" title="no scheduled backups; Back up now and the API still work">Turn schedule off</button>
+      <span class="spacer"></span>
+      <button id="btnBkNow">Back up now</button>
+    </div>
+    <div id="bkResult" class="muted"></div>
+    <details style="margin-top:8px">
+      <summary class="muted">Using it with rsync / borg / restic</summary>
+      <div class="muted" style="font-size:12px;margin-top:6px">
+        The folder is <code>./backups</code> next to <code>docker-compose.yml</code> unless
+        you mounted another one at <code id="bkDir2">/backups</code>. To make sure your tool
+        never runs halfway through a snapshot, have it ask for a fresh one first. The call
+        returns only when the snapshot is finished and fails if it didn't work:
+<pre class="mono" style="white-space:pre-wrap;margin:6px 0">curl -fsS -X POST http://localhost:9999/api/backup \
+  &amp;&amp; restic -r /mnt/nas/restic backup ~/coldvault/backups/latest</pre>
+        Or just schedule your tool for after the daily time above. Files are left
+        uncompressed so borg/restic can deduplicate between runs. To restore: stop
+        ColdVault, copy <code>latest/coldvault.db</code> into the data folder, start it.
+        Credentials are never included, so back up your <code>.env</code> separately.
+      </div>
+    </details>
+  </div>
+
   <div class="box">
     <h3>Email notifications</h3>
     <div id="notifyInfo" class="kv"></div>

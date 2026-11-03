@@ -235,6 +235,19 @@ def init():
     _conn.commit()
 
 
+def snapshot(path):
+    """Write a consistent copy of the live database to `path` using SQLite's
+    online backup API — unlike copying coldvault.db, this can never capture a
+    half-written page. Writers wait on the lock for the (short) duration."""
+    dest = sqlite3.connect(path)
+    try:
+        with _lock:
+            _conn.backup(dest)
+        dest.commit()
+    finally:
+        dest.close()
+
+
 def _exec(sql, params=()):
     with _lock:
         cur = _conn.execute(sql, params)

@@ -7,6 +7,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import audit as audit_mod
 import awsapi
+import backup as backup_mod
 import buckets as buckets_mod
 import config
 import db
@@ -183,10 +184,13 @@ def api_health():
         except AwsError as e:
             body["aws"] = {"ok": False, "error": str(e)[:200]}
 
+    body["backup"], backup_issue = backup_mod.health()
+
     issues = (integrity["failed_uploads"] + integrity["manifest_mismatch"]
               + integrity["audit_missing"] + integrity["audit_size_mismatch"]
               + integrity["audit_class_drift"] + restores["failed"]
-              + (0 if body.get("aws", {}).get("ok", True) else 1))
+              + (0 if body.get("aws", {}).get("ok", True) else 1)
+              + (1 if backup_issue else 0))
     busy = uploads["running"] or uploads["queued"] > 0 or downloads["running"]
     body["status"] = "attention" if issues else ("busy" if busy else "ok")
 
@@ -704,6 +708,35 @@ def api_deletions():
                     "totals": db.deletion_totals(bucket)})
 
 
+@app.get("/api/backup")
+def api_backup_status():
+    return jsonify(backup_mod.status())
+
+
+@app.post("/api/backup")
+def api_backup_run():
+    """Take a snapshot now and answer only when it's finished, so a host script
+    can chain its own tool: `curl -fsS -X POST …/api/backup && restic backup …`.
+    Fails (HTTP 500) when the snapshot failed, so `curl -f` stops the chain."""
+    data = request.get_json(silent=True) or {}
+    trigger = "manual" if data.get("trigger") == "manual" else "api"
+    try:
+        r = backup_mod.run(trigger)
+    except backup_mod.BackupBusy as e:
+        return jsonify({"ok": False, "error": str(e)}), 409
+    return jsonify(r), (200 if r["ok"] else 500)
+
+
+@app.post("/api/backup/settings")
+def api_backup_settings():
+    data = request.get_json(force=True)
+    try:
+        saved = backup_mod.save_settings(data.get("at"), data.get("keep"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, **saved, "next_run": backup_mod.status()["next_run"]})
+
+
 @app.get("/api/sessions")
 def api_sessions():
     return jsonify(db.list_sessions())
@@ -982,6 +1015,7 @@ def api_logs():
 if __name__ == "__main__":
     watch.start()
     restore.start_poller()
+    backup_mod.start()
     log_event("INFO", "app",
               f"ColdVault {version.VERSION} started — bucket={config.BUCKET or '(not set!)'}, "
               f"storage_class={config.STORAGE_CLASS}, port={config.PORT}")

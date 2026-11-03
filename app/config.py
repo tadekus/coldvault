@@ -106,6 +106,17 @@ DOWNLOAD_PART_SIZE = max(5, env_int("COLDVAULT_DOWNLOAD_PART_SIZE_MB", 256)) * 1
 DOWNLOAD_MIN_FREE = env_int("COLDVAULT_DOWNLOAD_MIN_FREE_MB", 200) * 1024 * 1024
 PORT = env_int("COLDVAULT_PORT", 9999)
 
+# --- Local backup of ColdVault's own state ---
+# A consistent snapshot of the database (plus logs, CSV exports and the
+# non-secret config) is written to BACKUP_DIR/latest — the folder to point
+# rsync/borg/restic at. Copying the live coldvault.db directly can capture a
+# half-written file; this snapshot can't. Daily at BACKUP_AT (local HH:MM,
+# empty = only on demand); BACKUP_KEEP older snapshots are kept under
+# BACKUP_DIR/history. The schedule and keep count can be changed in the UI.
+BACKUP_DIR = env("COLDVAULT_BACKUP_DIR", "/backups")
+BACKUP_AT = env("COLDVAULT_BACKUP_AT", "03:00")
+BACKUP_KEEP = max(0, env_int("COLDVAULT_BACKUP_KEEP", 7))
+
 DATA_DIR = env("COLDVAULT_DATA_DIR", "/data")
 TMP_DIR = os.path.join(DATA_DIR, "tmp")
 DB_PATH = os.path.join(DATA_DIR, "coldvault.db")

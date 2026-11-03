@@ -4,6 +4,35 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.17.0
+
+- **Local backup of ColdVault's own data.** A new **Settings** tab (it replaces the
+  Notifications tab, which moves inside it) has a **Backup** section. The index
+  — upload checksums, manifest results, sessions, restores, deletion records,
+  settings — exists only in ColdVault's database. It's now snapshotted daily to
+  `./backups/latest`, for rsync, borg or restic to pick up.
+  - The snapshot uses SQLite's online backup API and passes `PRAGMA
+    integrity_check`. Copying the live `coldvault.db` can catch a half-written
+    file; this can't.
+  - Alongside the `.db`: `files.csv` and `deletions.csv` (the index readable
+    without SQLite), the logs, `config.json` (credentials excluded), and
+    `backup.json` (row counts plus a sha256 for every file).
+  - The snapshot is built aside and swapped into `latest/` only when complete,
+    so `latest/` is never partial and a failed run leaves the previous one
+    intact. The last N snapshots are kept in `history/` as hard links.
+  - Daily at 03:00 with 7 kept by default. Both can be changed in the UI or
+    via `COLDVAULT_BACKUP_AT` / `COLDVAULT_BACKUP_KEEP`. A missed slot runs on
+    startup, and a failure is retried an hour later.
+  - **`POST /api/backup`** returns only once the snapshot is finished (HTTP 500
+    if it failed). `curl -fsS -X POST …/api/backup && restic backup …` can never
+    back up a half-made snapshot.
+  - `/health` gains a `backup` block and reports `attention` when the last
+    backup failed or a scheduled one hasn't succeeded in two days.
+  - Files are left uncompressed so borg/restic can deduplicate. `.env` is never
+    copied: back it up yourself.
+- Both compose files mount `./backups:/backups`. Recreate the container after
+  pulling: `docker compose up -d --build`.
+
 ## 1.16.0
 
 - **Retention covers every bucket, so it matches the Tree.** An expiry set or a
