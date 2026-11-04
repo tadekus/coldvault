@@ -4,6 +4,22 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.19.1
+
+- README: **AWS users and permissions**, a full guide to the identities ColdVault
+  should run with. It covers the everyday user (can never delete, enforced by an
+  explicit Deny), the MFA-unlocked delete role, and agent users, and why a role
+  is safer than a second user with delete keys.
+  - Checking which identity the running ColdVault uses (one read-only command),
+    and when to keep an existing user versus create a new one (not if it's also
+    your console login), with a warning about root keys.
+  - Generating the policies without placeholders, the AWS console click path
+    and the equivalent CLI commands, the `.env` lines, testing with Re-check and
+    Test delete role, adding a bucket later, and a troubleshooting table.
+- `deploy/iam/README.md` now just describes the generator and points to that guide,
+  so the two can't drift apart. The Notes section's permission list is updated
+  for the delete role.
+
 ## 1.19.0
 
 - **The earliest charge-free expiry date.** Deep Archive bills every object for at

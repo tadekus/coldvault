@@ -70,7 +70,8 @@ everything it does.
 
 ## Installation
 
-Requirements: Docker (with Compose) and an AWS IAM user — see [IAM policy](#notes) below.
+Requirements: Docker (with Compose) and an AWS IAM user — see
+[AWS users and permissions](#aws-users-and-permissions) for how to set it up properly.
 
 ```bash
 git clone https://github.com/tadekus/coldvault.git
@@ -111,6 +112,180 @@ Open the dashboard and click **Test AWS connection** (runs `sts get-caller-ident
 the choice is persisted and overrides `.env`. If your bucket already contains data,
 click **Import bucket → index** to pull the existing object list into the local index
 (imported objects show as `remote`).
+
+## AWS users and permissions
+
+ColdVault is built so that **nothing running day to day can delete your archive**.
+That takes two separate AWS identities (three with an agent):
+
+| Identity | Type | Used by | Can | Can never |
+|---|---|---|---|---|
+| **Everyday user** (e.g. `coldvault-master`) | IAM user, keys in the master's `.env` | the master, all the time | upload, restore, download, list, audit, and *ask* to unlock the delete role | delete — an explicit **Deny**, so a broader policy attached later can't change that |
+| **Delete role** (`ColdVaultDelete`) | IAM role, no keys of its own | the master, only while a deletion you confirmed is running | delete objects in your buckets | anything else |
+| **Agent user** (e.g. `coldvault-agent`) | IAM user, keys in the agent's `.env` | a [second machine](#second-machine-agent) | upload, download | delete, restore, list |
+
+**Why a role, not a second user with delete rights?** A second user's keys would sit in
+`.env` all the time, so a stolen backup or a compromised machine could delete
+everything. A role has no keys: the everyday user can only *ask* for temporary role
+credentials, and the role's trust policy grants that **only with a fresh code from your
+authenticator app (MFA)**. When you delete, ColdVault asks for the code as the last
+step, borrows the role for 15 minutes, deletes, and throws the credentials away. A wrong
+code means nothing is deleted, and every deletion shows up in AWS CloudTrail as an
+MFA-verified role session.
+
+You don't have to set up the role: without it ColdVault is simply **append-only** (the
+Retention tab can schedule expiry, but its delete buttons stay off). Add the role when
+you actually want to delete.
+
+### What you need
+
+- An **administrator** login for your AWS account — the web console, or an admin
+  profile for the AWS CLI **on your own computer**. Never give ColdVault admin keys, and
+  never use the account's **root** user's keys for ColdVault.
+- Your 12-digit **account number** and the names of your **buckets**.
+- An authenticator app on your phone (Google Authenticator, 1Password, Authy, …) for MFA.
+
+### 1. Check what ColdVault uses today
+
+If ColdVault is already running, ask AWS which identity its keys belong to (read-only;
+run on the master, in the ColdVault folder):
+
+```bash
+cd ~/coldvault && ACCOUNT=$(docker compose exec -T coldvault aws sts get-caller-identity --query Account --output text) && ARN=$(docker compose exec -T coldvault aws sts get-caller-identity --query Arn --output text) && echo "account: $ACCOUNT  identity: $ARN"
+```
+
+- `…:user/<name>` — an IAM user. **If that user is used by ColdVault only**, keep it as
+  the everyday user. If it's also your own console login or used by other scripts,
+  **create a separate everyday user** instead: the policy below blocks deleting in your
+  ColdVault buckets for whichever user carries it — in the console too — and you'd
+  remove its other permissions.
+- `…:root` — the account's root keys. Replace them with an everyday user right away,
+  then delete those root keys in the console (*Security credentials* of the root user).
+
+### 2. Write the policies
+
+The script fills in your account number and buckets and writes four policy files. It
+makes **no AWS calls**; the files go to `deploy/iam/out/`, which git ignores.
+
+```bash
+cd ~/coldvault/deploy/iam
+./make-policies.sh 123456789012 my-archive-bucket second-bucket      # your account + all your buckets
+```
+
+Use **your real values**, without angle brackets — `<account-id>` typed literally makes
+bash answer *"No such file or directory"*. Straight after step 1 you can let the shell
+fill them in, and keep the existing user's name:
+
+```bash
+cd ~/coldvault/deploy/iam && MASTER_USER="${ARN##*/}" ./make-policies.sh "$ACCOUNT" my-archive-bucket second-bucket
+```
+
+Without `MASTER_USER` the everyday user is called `coldvault-master` (`AGENT_USER` and
+`DELETE_ROLE` change the other names). The four files:
+
+| File | Goes on | Says |
+|---|---|---|
+| `master-user.json` | the everyday user | allow list/upload/restore/download, allow `sts:AssumeRole` on the delete role, **deny** `s3:DeleteObject` |
+| `delete-role-trust.json` | the delete role's *trust policy* | only the everyday user may assume it, and only with MFA (code less than 5 minutes old) |
+| `delete-role.json` | the delete role's permissions | allow `s3:DeleteObject` on your buckets' objects — nothing else |
+| `agent-user.json` | an agent user | allow upload/download, **deny** delete |
+
+Read them — they're short. For example, the trust policy:
+
+```json
+{"Effect": "Allow",
+ "Principal": {"AWS": "arn:aws:iam::123456789012:user/coldvault-master"},
+ "Action": "sts:AssumeRole",
+ "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"},
+               "NumericLessThan": {"aws:MultiFactorAuthAge": "300"}}}
+```
+
+### 3. Create them — in the AWS console
+
+Signed in as an administrator, in **IAM**:
+
+1. **Everyday user** *(keeping an existing user? Do only step 2 here — its keys are already in `.env`)*
+   1. *Users → Create user*, name `coldvault-master`, **no** console access → *Next* →
+      leave permissions empty → *Create user*.
+   2. Open the user → *Permissions → Add permissions → Create inline policy → JSON* →
+      paste `master-user.json` → *Next*, name it `coldvault` → *Create policy*. If the
+      user has other policies attached (e.g. `AmazonS3FullAccess`), remove them — the
+      inline policy is everything ColdVault needs.
+   3. *Security credentials → Create access key → Application running outside AWS* →
+      copy both keys into the master's `.env` (`AWS_ACCESS_KEY_ID`,
+      `AWS_SECRET_ACCESS_KEY`). The secret is shown only once.
+2. **MFA for the everyday user** — open the user → *Security credentials → Assign MFA
+   device* → name it (e.g. `coldvault-master`) → *Authenticator app* → scan the QR code
+   and enter two consecutive codes. Copy the device's **Identifier**, e.g.
+   `arn:aws:iam::123456789012:mfa/coldvault-master`.
+3. **Delete role** — *Roles → Create role → Custom trust policy* → paste
+   `delete-role-trust.json` → *Next* → add no permissions → *Next* → name
+   `ColdVaultDelete` → *Create role*. Open it → *Permissions → Add permissions → Create
+   inline policy → JSON* → paste `delete-role.json` → name `delete` → *Create policy*.
+   Copy the role's **ARN** from its summary.
+4. **Agent user** (only with a [second machine](#second-machine-agent)) — as in 1, with
+   `agent-user.json`; its keys go into the agent's `.env`. One user per agent lets you
+   revoke a single machine.
+
+### 3. …or with the AWS CLI
+
+With an administrator profile (here `admin`) on your own computer, in `deploy/iam/`:
+
+```bash
+P="--profile admin"
+# everyday user (skip create-user and create-access-key if you keep an existing one)
+aws iam create-user --user-name coldvault-master $P
+aws iam put-user-policy --user-name coldvault-master --policy-name coldvault --policy-document file://out/master-user.json $P
+aws iam create-access-key --user-name coldvault-master $P      # -> the master's .env
+# MFA: assign it in the console ("MFA for the everyday user" above) — it needs your phone anyway
+# delete role (after the user exists: AWS checks the trust policy's user)
+aws iam create-role --role-name ColdVaultDelete --assume-role-policy-document file://out/delete-role-trust.json $P
+aws iam put-role-policy --role-name ColdVaultDelete --policy-name delete --policy-document file://out/delete-role.json $P
+# agent user
+aws iam create-user --user-name coldvault-agent $P
+aws iam put-user-policy --user-name coldvault-agent --policy-name coldvault --policy-document file://out/agent-user.json $P
+aws iam create-access-key --user-name coldvault-agent $P       # -> the agent's .env
+```
+
+### 4. Tell ColdVault, and test
+
+In the master's `.env` (role ARN and MFA identifier from step 3):
+
+```
+COLDVAULT_DELETE_ROLE_ARN=arn:aws:iam::123456789012:role/ColdVaultDelete
+COLDVAULT_DELETE_MFA_SERIAL=arn:aws:iam::123456789012:mfa/coldvault-master
+```
+
+Apply with `docker compose up -d` (a plain `restart` doesn't re-read `.env`). Then in
+**Retention**:
+
+1. **Re-check** — every bucket should show 🔒 *append-only* for the everyday user, plus
+   🔐 *deleting goes through the delete role*.
+2. **Test delete role** — enter a code. It unlocks the role and runs a harmless probe
+   (a delete of a random key that never existed): *"the role can delete from this
+   bucket — nothing was removed"*.
+
+From then on every delete — Retention or Tree — ends with *"Enter the 6-digit code from
+your authenticator app"*.
+
+### Adding a bucket later
+
+Run `make-policies.sh` again with the **full** list of buckets and apply the new files:
+in the console, edit the inline policies (`coldvault` on the users, `delete` on the
+role); with the CLI, repeat the `put-user-policy` / `put-role-policy` commands. A bucket
+missing from `delete-role.json` shows in **Test delete role** as *"has no
+s3:DeleteObject on this bucket"*.
+
+### If something doesn't work
+
+| Symptom | Cause |
+|---|---|
+| `-bash: account-id: No such file or directory` | an `<…>` placeholder typed literally — use the real value |
+| *wrong or already-used code* | each code works once and only for ~30 s; wait for the next one. Check the phone's clock is set automatically |
+| *not authorized to perform: sts:AssumeRole* | the everyday user lacks `UnlockDeleteRole` (re-apply `master-user.json`), the trust policy names a different user, or `COLDVAULT_DELETE_MFA_SERIAL` isn't that user's device |
+| *has no s3:DeleteObject on this bucket* | the bucket isn't in `delete-role.json` — see *Adding a bucket later* |
+| Retention says the everyday user **CAN** delete | it still has another policy granting delete — remove it; with `master-user.json` applied the Deny wins |
+| *Test AWS connection* fails after the switch | new keys not in `.env`, or `docker compose up -d` not run |
 
 ## Running, restarting and updating
 
@@ -646,8 +821,8 @@ The better arrangement is **both**: an everyday user that can never delete, plus
 separate **delete role** that ColdVault unlocks only for a deletion you've confirmed —
 with the 6-digit code from your authenticator app — for 15 minutes, then forgets. A
 leaked `.env` can't delete anything, and every deletion is visible in CloudTrail as an
-MFA-verified role session. [deploy/iam/](deploy/iam/README.md) writes the policies for
-your account and buckets and walks through the setup; then set in `.env`:
+MFA-verified role session. The step-by-step setup is in
+[AWS users and permissions](#aws-users-and-permissions); it ends with, in `.env`:
 
 ```
 COLDVAULT_DELETE_ROLE_ARN=arn:aws:iam::123456789012:role/ColdVaultDelete
@@ -928,12 +1103,11 @@ or just divide it.
 
 - `.env` holds live AWS credentials — keep it out of git (already in `.gitignore`) and
   readable only by you: `chmod 600 .env`.
-- The IAM user needs: `s3:ListAllMyBuckets` (bucket picker), `s3:ListBucket` on the
-  bucket, and `s3:PutObject`, `s3:GetObject`, `s3:RestoreObject`,
-  `s3:AbortMultipartUpload` on the bucket's objects, plus `sts:GetCallerIdentity`
-  for the connection test. The Retention tab additionally needs `s3:DeleteObject`
-  (and `s3:GetBucketVersioning` for its versioning warning) — withhold
-  `s3:DeleteObject` if you want ColdVault to be strictly append-only.
+- AWS permissions: see [AWS users and permissions](#aws-users-and-permissions). In
+  short, the everyday user needs `s3:ListAllMyBuckets`, `s3:ListBucket` and
+  `s3:GetBucketVersioning` on the buckets, and `s3:PutObject`, `s3:GetObject`,
+  `s3:RestoreObject`, `s3:AbortMultipartUpload` on their objects — and should **not**
+  have `s3:DeleteObject`; deleting goes through the delete role.
 - `COLDVAULT_BUCKET` in `.env` is the initial bucket. You can also click
   **List buckets** on the dashboard and pick one there — that choice is persisted in
   `./data` and overrides the `.env` value until you pick another.
