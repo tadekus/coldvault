@@ -4,6 +4,53 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.18.0
+
+- **A second machine (agent).** Another computer — e.g. a Raspberry Pi next to the
+  master — can upload its own drives and receive downloads, with everything
+  recorded in the master's one database and managed from the master's one web UI.
+  Run it with `docker-compose.agent.yml` and `.env.agent.example`; see README
+  "Second machine (agent)".
+  - **Canary drives** plugged into the agent upload automatically, with the same
+    rules as on the master (bucket from the canary, one upload per plug-in, no
+    re-upload of a drive left plugged in across a restart).
+  - **Upload from** (manual upload) and **Download to** (Downloads tab) pick the
+    machine. The agent browses, plans and checks its own disk, then reads or
+    writes it straight to or from S3. "Local file", Check local files and the
+    leftover-file scan follow the chosen machine.
+  - The Dashboard gets an **Agents** box (online/offline, activity, drives,
+    download folder and free space, version). Sessions tables gain a Machine
+    column, and agent log lines appear in the Logs tab prefixed with its name.
+  - **Both machines upload at the same time.** Each file's S3 key is reserved just
+    before upload, so two machines never write one object at once: the second
+    waits, then skips if the content is identical. **Different content from a
+    different machine under the same key is refused** (two drives with the same
+    label), not allowed to replace the other machine's object. The same machine
+    replacing its own changed file works as before.
+  - **The agent has no database and stops without the master.** The file in
+    flight finishes, its record waits, nothing new starts, and it resumes when
+    the master is back. A master restart doesn't disturb an agent's session. An
+    agent restart, or silence beyond `COLDVAULT_AGENT_FAIL_MINUTES` (10), fails
+    its interrupted sessions; re-running skips verified files. `/health` reports
+    agents and turns to `attention` while an offline agent owes work.
+  - **Security.** Agents present a shared token (`COLDVAULT_AGENT_TOKEN`; none set =
+    agents refused) and may change only their own sessions' records, through a
+    fixed list of database calls. Retried calls are never applied twice. Bucket,
+    prefix, storage class, canary name and checks are sent by the master, so the
+    two can't drift. The README has an IAM policy for an agent user without
+    delete rights.
+- Fixes found along the way, which also apply with no agent at all:
+  - A read error on a file no longer marks an already-verified index entry for
+    the same key as failed. That object is still safely in S3.
+  - Downloads: a skipped or failed file could have its status written onto
+    another file's row when several downloaded in parallel.
+  - Download sessions cut off by a restart are now marked failed instead of
+    staying "running".
+- `env-check.sh` compares an agent's `.env` with `.env.agent.example`.
+- New settings on the master: `COLDVAULT_NAME`, `COLDVAULT_AGENT_TOKEN`,
+  `COLDVAULT_AGENT_FAIL_MINUTES`. Existing databases are upgraded in place; all
+  past sessions and downloads count as the master's own.
+
 ## 1.17.1
 
 - **`env-check.sh`** — run it after `git pull` to see what's new in

@@ -1,4 +1,5 @@
 import os
+import socket
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +49,25 @@ def env_bool(name, default=True):
 def _csv(name, default=""):
     return [x.strip() for x in env(name, default).split(",") if x.strip()]
 
+
+# --- Master / agent ---
+# A master (the default) is the full app: database, web UI, everything. An
+# agent is a second machine — e.g. a Raspberry Pi next to the master — that
+# only does the work that must happen where its disks are: watching its drives,
+# uploading them, downloading restores onto them. It has no database of its own:
+# every record goes to the master, and it stops working when the master is
+# unreachable. See README "Second machine (agent)".
+ROLE = env("COLDVAULT_ROLE", "master").lower()
+# How this machine is shown in the UI ("Upload from", "Download to", Sessions).
+NAME = env("COLDVAULT_NAME") or ("master" if ROLE != "agent" else socket.gethostname())
+# Shared secret between master and agents. On the master, empty = no agent may
+# connect. Same value on every agent.
+AGENT_TOKEN = env("COLDVAULT_AGENT_TOKEN")
+# Agent only: where the master is, e.g. http://master-host:9999
+MASTER_URL = env("COLDVAULT_MASTER_URL").rstrip("/")
+# Master only: an agent silent this long has its running sessions marked failed
+# (re-running them skips everything already verified).
+AGENT_FAIL_AFTER = max(1, env_int("COLDVAULT_AGENT_FAIL_MINUTES", 10)) * 60
 
 BUCKET = env("COLDVAULT_BUCKET")
 # The .env value, kept after the UI's bucket picker overwrites BUCKET, so the

@@ -64,6 +64,9 @@ everything it does.
   the SQLite events table.
 - **Local backup of its own state** — a daily, consistent snapshot of the database,
   logs and config in `./backups/latest`, ready for rsync, borg or restic.
+- **A second machine (agent)** — e.g. a Raspberry Pi next to the master uploads its own
+  drives and receives downloads, at the same time as the master, with one shared index
+  and one web UI.
 
 ## Installation
 
@@ -748,6 +751,111 @@ backup set (encrypted, ideally).
 `/health` reports a `backup` block and turns to `attention` if the last backup failed,
 or if a scheduled backup hasn't succeeded in two days.
 
+## Second machine (agent)
+
+A second computer — typically a Raspberry Pi, or another machine on the same network —
+can work alongside the main ColdVault. The main one is the **master**: it keeps the one
+database, serves the web UI, and does everything it does today. The second one is an
+**agent**: it does only the work that has to happen where its disks are.
+
+- **Canary drives plugged into the agent** upload automatically, exactly like on the
+  master — same canary file, same bucket choice, same one-upload-per-plug-in rule. The
+  Dashboard's **Agents** box shows each agent, online or not, what it's doing, and the
+  drives it sees.
+- **Manual uploads**: pick the agent in **Upload from**, browse its folders, start the
+  upload. The agent reads its own disk and sends the files straight to S3.
+- **Downloads**: pick the agent in **Download to** on the Downloads tab. Restored files
+  are fetched straight from S3 onto the agent's disk and checksum-verified there. "Local
+  file", **Check local files** and the leftover-file scan then show that machine.
+- **Restores, the index, Tree, Retention, deletions, email reports and backups** stay on
+  the master. Restores are requested there as before; any restored object can then be
+  downloaded to either machine.
+
+Both machines upload **at the same time**, each from its own drives. Every file's S3 key
+is reserved just before it uploads, so two machines never write the same object at once:
+the second waits, then skips if the first archived identical content. If the second has
+*different* content under the same key — almost always two drives given the same label
+— it is **refused** with a clear error rather than replacing the other machine's object
+(the replaced one would still be billed its full 180 days). Rename one of the labels.
+They share your internet upload speed, so two at once each go about half as fast.
+
+**The agent has no database.** Every record it makes goes to the master at once. When
+the master can't be reached, the agent **stops**: a file already uploading finishes and
+its record waits, nothing new starts, and everything resumes when the master is back. A
+master restart doesn't disturb an agent's session. An agent that restarts, or stays
+silent for `COLDVAULT_AGENT_FAIL_MINUTES` (10), has its interrupted sessions marked
+failed — re-run them; verified files are skipped. `/health` turns to `attention` while an
+offline agent still owes work.
+
+### Setting it up
+
+**1. On the master** — give it a name and a shared secret, in `.env`:
+
+```bash
+openssl rand -hex 32        # a long random token
+```
+
+```
+COLDVAULT_NAME=master
+COLDVAULT_AGENT_TOKEN=<the token>
+```
+
+then `docker compose up -d`. Without a token, agents are refused.
+
+**2. An AWS user for the agent.** Give the agent its own IAM user that can upload and
+download but **not delete** — deleting stays possible only on the master. (Upload rights
+technically include overwriting; the key reservation above is what stops machines
+overwriting each other.)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject", "s3:GetObject", "s3:AbortMultipartUpload"],
+    "Resource": ["arn:aws:s3:::my-archive-bucket/*", "arn:aws:s3:::second-bucket/*"]
+  }]
+}
+```
+
+**3. On the agent** — a 64-bit OS (the AWS CLI has no 32-bit ARM build; on a Pi use
+Raspberry Pi OS 64-bit), Docker with the compose plugin, and the repository:
+
+```bash
+git clone https://github.com/tadekus/coldvault.git && cd coldvault
+cp .env.agent.example .env      # then edit it
+docker compose -f docker-compose.agent.yml up -d --build
+```
+
+In `.env`, set `COLDVAULT_NAME` (how it appears in the UI, e.g. `pi`),
+`COLDVAULT_MASTER_URL` (e.g. `http://<master-LAN-IP>:9999` — the master's LAN IP is the
+safest choice, since `.local` names often don't resolve inside Docker), the same
+`COLDVAULT_AGENT_TOKEN`, and the agent's AWS keys. The bucket, key prefix, storage class,
+canary file name and duplicate/manifest checks come from the master, so they can't drift
+apart. For canary drives, install the [USB automount package](deploy/usb-automount/README.md)
+on the agent too (a headless Pi doesn't auto-mount drives on its own); with `COLDVAULT_EJECT_AFTER_UPLOAD=true` there, its eject helper
+unmounts the agent's drives after a clean upload.
+
+Within a few seconds the agent appears on the master's Dashboard under **Agents**. The
+agent itself serves only a small status page on its port (`http://pi:9999`) — connection
+to the master, current activity, drives — plus `/health` for monitoring.
+
+**Updating:** update both machines to the same version (`git pull` and the same
+`up -d --build` on each). If their protocol differs, the master refuses the agent with a
+message saying so, and the Dashboard marks a version mismatch.
+
+### On a Raspberry Pi
+
+- Keep the ColdVault folder (its `data/`) on a **USB SSD, not the SD card**: large files
+  are staged in pieces of `COLDVAULT_PART_SIZE_MB` while they upload, which would wear out
+  an SD card. `.env.agent.example` already uses smaller parts and fewer workers.
+- A Pi 4 has no hardware SHA-256, so checksumming is slower than on a desktop; a Pi 5
+  does. On most home connections the upload speed is the limit anyway.
+
+**Security:** agents authenticate with the token, and each may change only its own
+sessions' records. The web UI itself still has no login, so keep both machines on your
+own network or a VPN such as Tailscale, never open to the internet.
+
 ## Health / monitoring endpoint
 
 `GET /health` returns a JSON snapshot of upload, restore and download activity plus
@@ -774,7 +882,9 @@ with `files_done/total`, `bytes_done/total`, `percent`, and `last_session` summa
 `current_session`, `queued`); and `integrity` (`failed_uploads`, `manifest_mismatch`,
 `audit_missing`, `audit_size_mismatch`, `audit_class_drift`). Integrity counts are for
 the active bucket. `backup` has `scheduled`, `last_ok`, `last_at`, `last_error` and
-`stale`; a failed or stale backup also sets `status` to `attention`.
+`stale`; a failed or stale backup also sets `status` to `attention`. `agents` lists each
+second machine with `online`, `last_seen`, `version` and `pending` sessions; an offline
+agent that still owes work sets `status` to `attention`.
 
 ## Performance tuning
 

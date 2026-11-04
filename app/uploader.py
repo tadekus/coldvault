@@ -11,10 +11,10 @@ from fnmatch import fnmatch
 
 import awsapi
 import config
-import db
 import manifest
 from awsapi import AwsError
 from logs import log_event
+from store import db
 
 READ_BLOCK = 8 * 1024 * 1024
 
@@ -53,7 +53,13 @@ def _hash_file(path, extra_algo=None):
 class Uploader:
     """Serial session queue; files within a session upload in parallel workers.
 
-    Each session is pinned to the bucket that was active when it was queued.
+    Runs on the master and on every agent. Each session is pinned to its bucket
+    and to the machine (location) that holds its files; the master creates
+    sessions, and an agent runs the ones created for it (run_assigned).
+
+    Before each upload the file's S3 key is reserved (db.claim_upload), so two
+    machines never write the same object at once: the second waits, then skips
+    if the first archived the same content.
 
     Verification model: every upload sends --checksum-sha256, so S3 rejects the
     write on any corruption in transit. The checksum S3 returns is compared to
@@ -69,50 +75,33 @@ class Uploader:
     def __init__(self):
         self.q = queue.Queue()
         self.current_session = None
-        self._selections = {}   # sid -> explicit list of selected paths
+        self._stopped = set()   # sessions the master no longer has running
         self._mstats = {}       # sid -> {manifest_state: count}
         self._mlock = threading.Lock()
         # Optional callback(sid, trigger) run after a session finishes; set by main.
         self.on_session_done = None
         threading.Thread(target=self._loop, daemon=True, name="uploader").start()
 
-    @staticmethod
-    def _common_base(items):
-        """Given selected absolute paths, drop any nested under a selected dir,
-        then return (base, pruned) where base is the common parent directory the
-        keys are made relative to (so selecting a folder == uploading it whole)."""
-        items = [os.path.realpath(i) for i in items]
-        dirs = [i for i in items if os.path.isdir(i)]
-        pruned = [i for i in items
-                  if not any(i != d and i.startswith(d + os.sep) for d in dirs)]
-        pruned = sorted(set(pruned))
-        base = os.path.commonpath(pruned) if len(pruned) > 1 else pruned[0]
-        if not os.path.isdir(base):
-            base = os.path.dirname(base)
-        return base, pruned
-
-    def enqueue(self, path, label, trigger, items=None, bucket=None):
-        """`bucket` pins this session's destination (a canary's own bucket, or
-        the one picked for a manual upload); None means the active bucket.
-        Callers are expected to have validated it — see buckets.check()."""
-        if items:
-            base, pruned = self._common_base(items)
-            source = base
-        else:
-            source = path
-            pruned = None
+    def enqueue(self, source, label, trigger, items=None, bucket=None):
+        """Master: queue an upload of the folder `source`, or of just `items`
+        under it (as localfs.prepare_upload returns them). `bucket` pins this
+        session's destination (a canary's own bucket, or the one picked for a
+        manual upload); None means the active bucket. Callers are expected to
+        have validated it — see buckets.check()."""
         if not label:
             label = os.path.basename(source.rstrip("/")) or "upload"
         bucket = bucket or config.BUCKET
-        sid = db.create_session(bucket, source, label, trigger)
-        if pruned is not None:
-            self._selections[sid] = pruned
-        what = f"{len(pruned)} selected item(s) under {source}" if pruned else source
+        sid = db.create_session(bucket, source, label, trigger, items=items)
+        what = f"{len(items)} selected item(s) under {source}" if items else source
         log_event("INFO", "upload",
                   f"Session #{sid} queued: {what} -> s3://{bucket} "
                   f"(label='{label}', trigger={trigger})")
         self.q.put(sid)
         return sid
+
+    def run_assigned(self, sid):
+        """Agent: run a session the master created for this machine."""
+        self.q.put(sid)
 
     def queue_size(self):
         return self.q.qsize()
@@ -176,8 +165,8 @@ class Uploader:
     def _run_session(self, sid):
         s = db.get_session(sid)
         root, label, bucket = s["source"], s["label"], s["bucket"]
+        sel = json.loads(s["items"]) if s.get("items") else None
         db.update_session(sid, status="scanning")
-        sel = self._selections.pop(sid, None)
         files = self._scan_items(sel) if sel else self._scan(root)
         total_bytes = sum(f[1] for f in files)
         db.update_session(sid, total_files=len(files), total_bytes=total_bytes, status="running")
@@ -201,6 +190,13 @@ class Uploader:
             for f in futures:
                 f.result()
 
+        if sid in self._stopped:
+            self._stopped.discard(sid)
+            log_event("WARNING", "upload",
+                      f"Session #{sid} stopped: the master no longer has it running "
+                      f"(it was failed while this machine was out of touch) — re-run it; "
+                      f"verified files are skipped")
+            return
         s = db.get_session(sid)
         status = "done" if s["failed_files"] == 0 else "done_with_errors"
         db.update_session(sid, status=status, finished_at=db.now())
@@ -219,7 +215,47 @@ class Uploader:
 
     # ---- single file ----
 
+    def _claim(self, sid, bucket, key, sha_hex, size, **fields):
+        """Reserve `key` for this session just before uploading it. Returns
+        True to go ahead; False when there's nothing to upload after all
+        (another session just archived the same content — counted as skipped)
+        or this session is no longer running (it stops)."""
+        waited = False
+        while True:
+            c = db.claim_upload(bucket, key, sid, sha256=sha_hex, size=size, **fields)
+            if c["state"] == "conflict":
+                raise AwsError(f"s3://{bucket}/{key} already holds different content uploaded "
+                               f"from {c['location'] or 'the master'} — two drives with the same "
+                               f"label? Upload this one under another label (canary \"name\"). "
+                               f"Nothing was overwritten.")
+            if c["state"] == "ok":
+                if waited:
+                    log_event("INFO", "upload", f"s3://{bucket}/{key} is free again — uploading")
+                return True
+            if c["state"] == "inactive":
+                if sid not in self._stopped:
+                    self._stopped.add(sid)
+                    log_event("WARNING", "upload",
+                              f"Session #{sid} is no longer running on the master — stopping")
+                return False
+            if not waited:
+                log_event("INFO", "upload",
+                          f"waiting: s3://{bucket}/{key} is being uploaded by session "
+                          f"#{c['holder']} on {c['location'] or 'the master'}")
+                waited = True
+            time.sleep(10)
+            if sid in self._stopped:
+                return False
+            cur = db.get_file(bucket, key)
+            if sha_hex and cur and cur["status"] == "verified" and cur["sha256"] == sha_hex:
+                db.bump_session(sid, skipped=1, bytes_done=size)
+                log_event("INFO", "upload",
+                          f"skip (the other session archived identical content): s3://{bucket}/{key}")
+                return False
+
     def _upload_one(self, sid, bucket, root, label, path, size, mtime, m_entries=None):
+        if sid in self._stopped:
+            return
         rel = os.path.relpath(path, root).replace(os.sep, "/")
         key = make_key(label, rel)
 
@@ -227,6 +263,7 @@ class Uploader:
         mentry = manifest.lookup(m_entries, path) if m_entries else None
         want_algo = mentry[0] if mentry else None
         m_state = m_algo = m_hash = None
+        existing, claimed = None, False
         try:
             existing = db.get_file(bucket, key)
             if (existing and existing["status"] == "verified"
@@ -275,9 +312,10 @@ class Uploader:
                                   f"already-archived s3://{bucket}/{dup['key']}")
                         return
 
-            db.upsert_file(bucket, key, local_path=path, size=size, mtime=mtime,
-                           session_id=sid, status="uploading", error=None,
-                           storage_class=config.STORAGE_CLASS)
+            if not self._claim(sid, bucket, key, sha_hex, size, local_path=path,
+                               mtime=mtime, storage_class=config.STORAGE_CLASS):
+                return
+            claimed = True
 
             t0 = time.monotonic()
             if size <= config.MULTIPART_THRESHOLD:
@@ -310,7 +348,11 @@ class Uploader:
                       f"{fmt_speed(size / elapsed)}, sha256={hex_sha[:16]}…"
                       + (f", manifest {m_state}" if m_state and m_state != "not_in_manifest" else "") + ")")
         except Exception as e:
-            db.upsert_file(bucket, key, status="failed", error=str(e)[:1000])
+            # Only mark the index row failed if this session owns it: a read
+            # error here mustn't turn another session's verified object into
+            # "failed" — that object is still safely in S3.
+            if claimed or not existing:
+                db.upsert_file(bucket, key, status="failed", error=str(e)[:1000])
             db.bump_session(sid, failed=1)
             log_event("ERROR", "upload", f"FAILED: s3://{bucket}/{key}", str(e)[:2000])
 

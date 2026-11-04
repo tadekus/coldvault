@@ -59,10 +59,35 @@ setInterval(() => {
   if (activeTab === "logs" && $("#logAuto").checked) loadLogs();
 }, 5000);
 
+/* ---------- machines (this master + agents) ---------- */
+// A location is "" for this master and an agent's name otherwise; the API
+// takes the same values.
+let masterName = "master";
+const machine = loc => loc || masterName;
+let locationsCache = [];
+
+async function loadLocations() {
+  try { locationsCache = (await api("/api/locations")).locations; }
+  catch (e) { return; }
+  for (const id of ["#uploadFrom", "#dlLocation"]) {
+    const sel = $(id), keep = sel.value;
+    sel.innerHTML = locationsCache.map(l =>
+      `<option value="${esc(l.value)}">${esc(l.name)}${l.local ? " (this machine)" : l.online ? "" : " — offline"}</option>`
+    ).join("");
+    sel.value = locationsCache.some(l => l.value === keep) ? keep : "";
+    // With no agents there is nothing to choose — keep the page as it was.
+    sel.closest(".row").style.display = locationsCache.length > 1 ? "" : "none";
+  }
+}
+const locOf = id => $(id).value || "";
+const locQ = id => "location=" + encodeURIComponent(locOf(id));
+
 /* ---------- dashboard ---------- */
 async function loadDashboard() {
   try {
     const [st, stats] = await Promise.all([api("/api/status"), api("/api/stats")]);
+    masterName = st.name || masterName;
+    $("#watcherWhere").textContent = `— ${masterName}, this machine`;
     $("#bucketBadge").textContent = `s3://${st.bucket || "?"} · ${st.storage_class}`;
     $("#bucketBadge").dataset.bucket = st.bucket || "";
 
@@ -87,7 +112,8 @@ async function loadDashboard() {
       ((st.uploading || []).length
         ? `<div><b>Uploading now</b><div class="uplist">` +
           st.uploading.map(u =>
-            `<div><code>${esc(u.key)}</code> <span class="muted">(${fmtBytes(u.size)})</span></div>`).join("") +
+            `<div><code>${esc(u.key)}</code> <span class="muted">(${fmtBytes(u.size)}${
+              u.location ? ` · from ${esc(u.location)}` : ""})</span></div>`).join("") +
           `</div></div>`
         : "");
 
@@ -101,6 +127,7 @@ async function loadDashboard() {
           `</div>`).join("")
       : "none";
 
+    loadAgents(st.agents_enabled, st.version);
     $("#connInfo").innerHTML = `
       <div><b>Bucket</b><code>${esc(st.bucket) || "⚠ not set"}</code></div>
       <div><b>Region</b><code>${esc(st.region) || "—"}</code></div>
@@ -108,6 +135,57 @@ async function loadDashboard() {
   } catch (e) {
     $("#statCards").innerHTML = `<div class="card"><div class="lbl">error: ${esc(e.message)}</div></div>`;
   }
+}
+
+async function loadAgents(enabled, masterVersion) {
+  let r;
+  try { r = await api("/api/agents"); } catch (e) { return; }
+  const el = $("#agentsInfo");
+  if (!r.agents.length) {
+    el.innerHTML = enabled
+      ? `No agent has connected yet. On the second machine set <code>COLDVAULT_ROLE=agent</code>,
+         <code>COLDVAULT_MASTER_URL</code> and the same <code>COLDVAULT_AGENT_TOKEN</code> —
+         see the README, "Second machine (agent)".`
+      : `Agents are off. To let a second machine (e.g. a Raspberry Pi) upload its own drives
+         into this index, set <code>COLDVAULT_AGENT_TOKEN</code> here — see the README,
+         "Second machine (agent)".`;
+    return;
+  }
+  el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Agent</th><th>Status</th>
+      <th>Activity</th><th>Canary drives</th><th>Download folder</th><th>Version</th><th></th>
+    </tr></thead><tbody>${r.agents.map(a => {
+      const i = a.info || {}, act = i.activity || {}, w = a.work || {};
+      const status = a.online
+        ? `<span style="color:var(--ok)">● online</span>`
+        : `<span style="color:var(--err)">● offline</span> <span class="muted">since ${esc(a.last_seen)}</span>`;
+      const doing = [
+        act.upload_session ? `uploading #${act.upload_session}` : "",
+        act.download_session ? `downloading #${act.download_session}` : "",
+        w.uploads || w.downloads
+          ? `<span class="muted">${w.uploads} upload / ${w.downloads} download session(s) open</span>` : "",
+      ].filter(Boolean).join("<br>") || `<span class="muted">idle</span>`;
+      const drives = Object.entries(a.drives || {}).map(([m, d]) =>
+        `<div><code>${esc(m)}</code> → <b>${esc(d.label)}</b>${d.bucket ? ` in <code>s3://${esc(d.bucket)}</code>` : ""}`
+        + (d.session_id ? ` (session #${d.session_id})` : d.seeded ? ` <span class="muted">(already uploaded)</span>` : "")
+        + (d.error ? `<div style="color:var(--err)">✘ ${esc(d.error)}</div>` : "") + `</div>`).join("")
+        || `<span class="muted">none</span>`;
+      const ver = !masterVersion || a.version === masterVersion ? esc(a.version)
+        : `<span style="color:var(--warn)" title="the master runs ${esc(masterVersion)} — update both to match">${esc(a.version)}</span>`;
+      return `<tr><td><b>${esc(a.name)}</b></td><td>${status}</td><td>${doing}</td><td>${drives}</td>
+        <td class="mono">${esc(i.download_dir || "—")}${i.download_free != null
+          ? `<div class="muted">${fmtBytes(i.download_free)} free</div>` : ""}</td>
+        <td class="mono">${ver}</td>
+        <td>${a.online ? "" : `<button class="secondary agentForget" data-name="${esc(a.name)}"
+              title="take it off this list (its sessions and records stay)">Forget</button>`}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  $$("#agentsInfo .agentForget").forEach(b => b.onclick = async () => {
+    if (!confirm(`Take ${b.dataset.name} off the agents list?\n\nIts sessions and records stay; `
+               + `it reappears if it checks in again.`)) return;
+    try {
+      await api("/api/agents/forget", { body: { name: b.dataset.name } });
+      loadDashboard(); loadLocations();
+    } catch (e) { alert("✘ " + e.message); }
+  });
 }
 
 $("#btnTest").onclick = async () => {
@@ -316,7 +394,7 @@ $("#btnUseBucket").onclick = async () => {
 /* ---------- browse + manual upload ---------- */
 async function loadBrowseRoots() {
   try {
-    const r = await api("/api/browse/roots");
+    const r = await api("/api/browse/roots?" + locQ("#uploadFrom"));
     if (!r.roots.length) {
       $("#browseRoots").innerHTML = `<span class="muted">no roots configured — add mounts and COLDVAULT_BROWSE_ROOTS</span>`;
       return;
@@ -338,6 +416,20 @@ async function loadBrowseRoots() {
 // Manual-upload selection: absolute path -> {type: "dir"|"file", name}
 const uploadSel = new Map();
 const joinPath = (dir, name) => dir.replace(/\/$/, "") + "/" + name;
+
+// Switching machines: paths and the selection belong to the old one.
+$("#uploadFrom").onchange = () => {
+  uploadSel.clear();
+  $("#uploadPath").value = "";
+  $("#browseList").innerHTML = "";
+  $("#uploadSelBar").style.display = "none";
+  $("#uploadCanary").textContent = "";
+  const loc = locationsCache.find(l => l.value === locOf("#uploadFrom"));
+  $("#uploadFromNote").textContent = loc && !loc.local
+    ? `files are read and uploaded by ${loc.name} itself, straight to S3` : "";
+  $("#browseRoots").innerHTML = "loading…";
+  loadBrowseRoots();
+};
 
 // Destination bucket for manual uploads. Every upload says where it is going;
 // nothing is sent until a bucket is chosen here (the active one by default).
@@ -385,7 +477,7 @@ function updateUploadSel() {
 
 async function browse(path) {
   try {
-    const r = await api("/api/browse?path=" + encodeURIComponent(path || ""));
+    const r = await api("/api/browse?path=" + encodeURIComponent(path || "") + "&" + locQ("#uploadFrom"));
     $("#uploadPath").value = r.path;
     $("#uploadSelBar").style.display = "";
 
@@ -450,22 +542,23 @@ $("#btnUpload").onclick = async () => {
   const bucket = $("#uploadBucket").value;
   if (!bucket || bucket === OTHER_BUCKET)
     return alert("Pick the bucket this upload should go to");
-  const dest = `\n\nDestination: s3://${bucket}${label ? "/" + label : ""}`;
+  const location = locOf("#uploadFrom");
+  const dest = `\n\nFrom: ${machine(location)}\nDestination: s3://${bucket}${label ? "/" + label : ""}`;
   let body;
   if (uploadSel.size) {
     const items = [...uploadSel.keys()];
     const dirs = [...uploadSel.values()].filter(v => v.type === "dir").length;
     if (!confirm(`Upload ${items.length} selected item(s) (${dirs} folder(s), ${items.length - dirs} file(s))?${dest}`)) return;
-    body = { items, label, bucket };
+    body = { items, label, bucket, location };
   } else {
     const path = $("#uploadPath").value.trim();
     if (!path) return alert("Pick a location, or select files/folders to upload");
     if (!confirm(`Upload the entire folder ${path}?${dest}`)) return;
-    body = { path, label, bucket };
+    body = { path, label, bucket, location };
   }
   try {
     const r = await api("/api/upload", { body });
-    alert(`Upload session #${r.session_id} queued → s3://${r.bucket}`);
+    alert(`Upload session #${r.session_id} queued on ${r.location} → s3://${r.bucket}`);
     uploadSel.clear();
     updateUploadSel();
     browse($("#uploadPath").value);
@@ -703,6 +796,7 @@ async function loadSessions() {
     const pct = s.total_bytes ? Math.round(100 * s.done_bytes / s.total_bytes) : (s.status === "done" ? 100 : 0);
     return `<tr>
       <td>${s.id}</td>
+      <td>${esc(machine(s.location))}</td>
       <td class="key">${esc(s.source)}</td>
       <td class="mono">${esc(s.bucket || "—")}</td>
       <td>${esc(s.label)}</td>
@@ -715,7 +809,7 @@ async function loadSessions() {
       <td class="num" ${s.failed_files ? 'style="color:var(--err)"' : ""}>${s.failed_files}</td>
       <td class="mono">${esc(s.started_at || "")}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="11" class="muted" style="padding:20px">no sessions yet</td></tr>`;
+  }).join("") || `<tr><td colspan="12" class="muted" style="padding:20px">no sessions yet</td></tr>`;
 }
 
 /* ---------- restores ---------- */
@@ -752,15 +846,33 @@ function updateDlCount() {
   $("#dlSelCount").textContent = `${dlSelected.size} selected`;
 }
 
+// Everything on this tab that touches a disk — "Local file", Browse, Download,
+// "Check local files", the leftover-file scan — is about the machine picked in
+// "Download to".
+let dlShownFor = null;   // which machine the destination path belongs to
+
+$("#dlLocation").onchange = () => {
+  const loc = locationsCache.find(l => l.value === locOf("#dlLocation"));
+  $("#dlLocationNote").textContent = loc && !loc.local
+    ? `${loc.name} downloads straight from S3 onto its own disk` : "";
+  $("#destBrowse").innerHTML = "";
+  orphCache = []; orphSel.clear();
+  $("#orphTable tbody").innerHTML = "";
+  $("#orphSummary").textContent = "";
+  loadDownloads();
+};
+
 async function loadDownloads() {
   const [r, s] = await Promise.all([
-    api("/api/restored"),
+    api("/api/restored?" + locQ("#dlLocation")),
     api("/api/download/sessions"),
   ]);
   restoredCache = r.items;
-  if (!$("#destPath").value) $("#destPath").value = r.download_dir;
+  if (!$("#destPath").value || dlShownFor !== r.location) $("#destPath").value = r.download_dir;
+  dlShownFor = r.location;
 
   $("#dlSummary").textContent =
+    (r.checked ? "" : `⚠ ${r.location} is offline — "Local file" shows the last known state · `) +
     `${r.items.length} restored object(s) available` +
     (s.queue_size ? ` · ${s.queue_size} session(s) queued` : "") +
     (s.current_session ? ` · session #${s.current_session} running` : "");
@@ -798,6 +910,7 @@ async function loadDownloads() {
                               : (d.status === "done" ? 100 : 0);
     return `<tr>
       <td>${d.id}</td>
+      <td>${esc(machine(d.location))}</td>
       <td class="key">${esc(d.dest)}</td>
       <td>${chip(d.status)}</td>
       <td><div class="progress"><i style="width:${pct}%"></i></div>
@@ -807,7 +920,7 @@ async function loadDownloads() {
       <td class="num" ${d.failed_files ? 'style="color:var(--err)"' : ""}>${d.failed_files}</td>
       <td class="mono">${esc(d.started_at || "")}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="8" class="muted" style="padding:20px">no download sessions yet</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted" style="padding:20px">no download sessions yet</td></tr>`;
 
   $("#dlFilesTable tbody").innerHTML = s.files.map(f => `<tr>
       <td class="key">${esc(f.key)}${f.error ? `<div class="muted" style="color:var(--err);font-size:11px">${esc(f.error)}</div>` : ""}</td>
@@ -836,12 +949,13 @@ function orphUpdateSel() {
 async function orphScan() {
   $("#orphSummary").textContent = "— scanning…";
   let r;
-  try { r = await api("/api/download/orphans"); }
+  try { r = await api("/api/download/orphans?" + locQ("#dlLocation")); }
   catch (e) { $("#orphSummary").textContent = "— ✘ " + e.message; return; }
   orphCache = r.items;
   orphSel.clear();
   $("#orphSummary").textContent =
     `— ${r.orphans.toLocaleString()} untracked file(s) · ${fmtBytes(r.orphan_bytes)} in ${esc(r.root)}`
+    + ` on ${machine(locOf("#dlLocation"))}`
     + (r.unarchived ? ` · ⚠ ${r.unarchived} not in any indexed bucket (${fmtBytes(r.unarchived_bytes)})` : "")
     + (r.tracked ? ` · ${r.tracked.toLocaleString()} tracked` : "");
   $("#orphTable tbody").innerHTML = r.items.map(f => {
@@ -911,7 +1025,7 @@ $("#btnOrphDelete").onclick = async () => {
   $("#orphResult").textContent = "deleting…";
   try {
     const r = await api("/api/download/orphans/delete", {
-      body: { paths, force: risky.length > 0 } });
+      body: { paths, force: risky.length > 0, location: locOf("#dlLocation") } });
     $("#orphResult").innerHTML =
       `<span style="color:var(--ok)">✔ deleted ${r.deleted} file(s) · freed ${fmtBytes(r.freed)}</span>`
       + (r.failed.length ? ` <span style="color:var(--err)">· ${r.failed.length} failed</span>` : "");
@@ -922,7 +1036,7 @@ $("#btnOrphDelete").onclick = async () => {
 $("#btnDlVerify").onclick = async () => {
   $("#dlSummary").textContent = "checking local files…";
   try {
-    const r = await api("/api/download/verify", { method: "POST" });
+    const r = await api("/api/download/verify", { body: { location: locOf("#dlLocation") } });
     $("#dlSummary").textContent = `checked ${r.checked} downloaded file(s) — ${r.deleted} now missing`;
     loadDownloads();
   } catch (e) {
@@ -957,7 +1071,7 @@ $("#btnDlSelNew").onclick = () => {
 
 async function browseDest(path) {
   try {
-    const r = await api("/api/download/browse?path=" + encodeURIComponent(path || ""));
+    const r = await api("/api/download/browse?path=" + encodeURIComponent(path || "") + "&" + locQ("#dlLocation"));
     $("#destPath").value = r.path;
     let html = "";
     if (r.parent) html += `<a data-p="${esc(r.parent)}">⬑ up</a>`;
@@ -977,9 +1091,10 @@ $("#btnDownload").onclick = async () => {
   const dest = sub ? base.replace(/\/$/, "") + "/" + sub : base;
   const items = [...dlSelected.values()];
   const totalBytes = items.reduce((a, x) => a + (x.size || 0), 0);
-  if (!confirm(`Download ${items.length} object(s) (${fmtBytes(totalBytes)}) to ${dest}?`)) return;
+  const location = locOf("#dlLocation");
+  if (!confirm(`Download ${items.length} object(s) (${fmtBytes(totalBytes)}) to ${dest} on ${machine(location)}?`)) return;
   try {
-    let r = await api("/api/download", { body: { dest, items } });
+    let r = await api("/api/download", { body: { dest, items, location } });
 
     if (r.needs_confirmation) {
       if (r.fits_count === 0) {
@@ -995,11 +1110,11 @@ $("#btnDownload").onclick = async () => {
         `OK  = download the ${r.fits_count} file(s) that fit\n` +
         `Cancel = cancel the whole download`);
       if (!ok) return;
-      r = await api("/api/download", { body: { dest, items, on_insufficient: "fit" } });
+      r = await api("/api/download", { body: { dest, items, location, on_insufficient: "fit" } });
     }
 
     if (r.session_id) {
-      let msg = `Download session #${r.session_id} queued`;
+      let msg = `Download session #${r.session_id} queued on ${machine(location)}`;
       if (r.partial) msg += `\n${r.downloaded_count} file(s) that fit; ${r.skipped_count} skipped for space.`;
       alert(msg);
       dlSelected.clear();
@@ -1589,5 +1704,10 @@ $("#btnLogs").onclick = loadLogs;
 
 /* ---------- init ---------- */
 loadDashboard();
-loadBrowseRoots();
+loadLocations().then(loadBrowseRoots);
 loadUploadBuckets();
+// Agents come and go; refresh the machine pickers now and then (not while one is open).
+setInterval(() => {
+  if (!["uploadFrom", "dlLocation"].includes(document.activeElement && document.activeElement.id))
+    loadLocations();
+}, 30000);

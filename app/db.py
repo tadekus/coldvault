@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import threading
@@ -5,7 +6,7 @@ from datetime import datetime
 
 import config
 
-_lock = threading.Lock()
+_lock = threading.RLock()   # re-entrant: claim_upload checks and writes under one hold
 _conn = None
 
 SCHEMA = """
@@ -52,7 +53,9 @@ CREATE TABLE IF NOT EXISTS sessions(
   skipped_files INTEGER DEFAULT 0,
   failed_files INTEGER DEFAULT 0,
   total_bytes INTEGER DEFAULT 0,
-  done_bytes INTEGER DEFAULT 0
+  done_bytes INTEGER DEFAULT 0,
+  location TEXT DEFAULT '', -- '' = this master; else the agent that runs it
+  items TEXT                -- JSON list of selected paths (manual selection)
 );
 
 CREATE TABLE IF NOT EXISTS restores(
@@ -80,7 +83,9 @@ CREATE TABLE IF NOT EXISTS dl_sessions(
   skipped_files INTEGER DEFAULT 0,
   failed_files INTEGER DEFAULT 0,
   total_bytes INTEGER DEFAULT 0,
-  done_bytes INTEGER DEFAULT 0
+  done_bytes INTEGER DEFAULT 0,
+  location TEXT DEFAULT '', -- '' = this master; else the agent that runs it
+  items TEXT                -- JSON list of the objects to fetch
 );
 
 CREATE TABLE IF NOT EXISTS downloads(
@@ -117,6 +122,17 @@ CREATE TABLE IF NOT EXISTS deletions(
   early_days INTEGER       -- days short of the storage-class minimum (0 = none)
 );
 CREATE INDEX IF NOT EXISTS idx_deletions_bucket ON deletions(bucket, deleted_at);
+
+-- Second machines (agents) that have checked in. Kept so the dashboard can show
+-- an agent as offline after a master restart, instead of forgetting it.
+CREATE TABLE IF NOT EXISTS agents(
+  name TEXT PRIMARY KEY,
+  boot_id TEXT,
+  version TEXT,
+  first_seen TEXT,
+  last_seen TEXT,
+  info TEXT                 -- JSON: drives, activity, free space (last check-in)
+);
 
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
@@ -226,12 +242,27 @@ def _migrate():
     _conn.commit()
 
 
+def _ensure_columns():
+    """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS
+    leaves an existing table alone)."""
+    for table, col, decl in (("sessions", "location", "TEXT DEFAULT ''"),
+                             ("sessions", "items", "TEXT"),
+                             ("dl_sessions", "location", "TEXT DEFAULT ''"),
+                             ("dl_sessions", "items", "TEXT")):
+        cols = [r[1] for r in _conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if col not in cols:
+            print(f"[db] adding {col} column to {table}")
+            _conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    _conn.commit()
+
+
 def init():
     global _conn
     _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _migrate()
     _conn.executescript(SCHEMA)
+    _ensure_columns()
     _conn.commit()
 
 
@@ -282,10 +313,11 @@ def set_setting(key, value):
 _event_count = 0
 
 
-def insert_event(level, category, message, detail=None):
+def insert_event(level, category, message, detail=None, ts=None):
+    """`ts` keeps an agent's own timestamp on a line it forwarded later."""
     global _event_count
     _exec("INSERT INTO events(ts, level, category, message, detail) VALUES(?,?,?,?,?)",
-          (now(), level, category, message, detail))
+          (ts or now(), level, category, message, detail))
     _event_count += 1
     if _event_count % 1000 == 0:
         _exec("DELETE FROM events WHERE id < (SELECT COALESCE(MAX(id),0) FROM events) - 100000")
@@ -310,9 +342,11 @@ def list_events(level=None, category=None, q=None, limit=200):
 
 # ---- sessions ----
 
-def create_session(bucket, source, label, trigger):
-    cur = _exec("INSERT INTO sessions(bucket, source, label, trigger, status, started_at) "
-                "VALUES(?,?,?,?,?,?)", (bucket, source, label, trigger, "queued", now()))
+def create_session(bucket, source, label, trigger, location="", items=None):
+    cur = _exec("INSERT INTO sessions(bucket, source, label, trigger, status, started_at, "
+                "location, items) VALUES(?,?,?,?,?,?,?,?)",
+                (bucket, source, label, trigger, "queued", now(), location or "",
+                 json.dumps(items) if items is not None else None))
     return cur.lastrowid
 
 
@@ -335,18 +369,33 @@ def list_sessions(limit=50):
     return _rows("SELECT * FROM sessions ORDER BY id DESC LIMIT ?", (limit,))
 
 
-def latest_session_status(source, bucket):
-    r = _row("SELECT status FROM sessions WHERE source=? AND bucket=? "
-             "ORDER BY id DESC LIMIT 1", (source, bucket))
+def latest_session_status(source, bucket, location=""):
+    r = _row("SELECT status FROM sessions WHERE source=? AND bucket=? AND location=? "
+             "ORDER BY id DESC LIMIT 1", (source, bucket, location or ""))
     return r["status"] if r else None
 
 
+ACTIVE = ("queued", "scanning", "running")
+
+
 def fail_stale_sessions():
-    """Mark sessions left mid-flight by a crash/restart as failed, so the UI
-    doesn't show a 'running' session that no process is actually running."""
+    """Mark this master's own sessions left mid-flight by a crash/restart as
+    failed, so the UI doesn't show a 'running' session no process is running.
+    An agent's sessions are left alone: the agent is still running them."""
     cur = _exec("UPDATE sessions SET status='failed', finished_at=? "
-                "WHERE status IN ('queued','scanning','running')", (now(),))
+                "WHERE location='' AND status IN ('queued','scanning','running')", (now(),))
     return cur.rowcount
+
+
+def session_location(sid):
+    r = _row("SELECT location FROM sessions WHERE id=?", (sid,))
+    return r["location"] if r else None
+
+
+def queued_sessions(location):
+    return [r["id"] for r in _rows(
+        "SELECT id FROM sessions WHERE location=? AND status='queued' ORDER BY id",
+        (location,))]
 
 
 # ---- files ----
@@ -367,6 +416,41 @@ def upsert_file(bucket, key, **kw):
     cur = _exec(f"INSERT INTO files({','.join(cols)}) VALUES({marks})",
                 (bucket, key, *kw.values()))
     return cur.lastrowid
+
+
+def claim_upload(bucket, key, sid, sha256=None, **fields):
+    """Reserve (bucket, key) for session `sid` just before its upload starts,
+    so two machines never write the same object at once. Atomic: the check and
+    the write happen under one hold of the lock.
+
+    Returns {"state": "ok"} once reserved, {"state": "busy", "holder": id,
+    "location": …} while another still-running session holds the key,
+    {"state": "conflict", "location": …} when the key already holds different
+    content uploaded from another machine, or {"state": "inactive"} if `sid`
+    itself is no longer running (it was failed — e.g. its agent was offline too
+    long — so it must stop).
+
+    The conflict rule: replacing a changed file is normal on the machine that
+    uploaded it, but a *different* machine writing different bytes to the same
+    key is almost always two drives given the same label — refused rather than
+    letting one silently replace the other (on Deep Archive the replaced object
+    would still be billed its full minimum). `sha256` is the new content's hash
+    when known; without it, a size match is required."""
+    with _lock:
+        s = _row("SELECT status, location FROM sessions WHERE id=?", (sid,))
+        if not s or s["status"] not in ACTIVE:
+            return {"state": "inactive"}
+        r = get_file(bucket, key)
+        if r and r["session_id"] not in (None, sid):
+            h = _row("SELECT status, location FROM sessions WHERE id=?", (r["session_id"],))
+            if r["status"] == "uploading" and h and h["status"] in ACTIVE:
+                return {"state": "busy", "holder": r["session_id"],
+                        "location": h["location"] or ""}
+            if (r["status"] == "verified" and h and (h["location"] or "") != (s["location"] or "")
+                    and (r["sha256"] != sha256 if sha256 else r["size"] != fields.get("size"))):
+                return {"state": "conflict", "location": h["location"] or ""}
+        upsert_file(bucket, key, session_id=sid, status="uploading", error=None, **fields)
+        return {"state": "ok"}
 
 
 def find_duplicate(bucket, sha256, size, exclude_key):
@@ -664,15 +748,19 @@ def distinct_buckets():
 
 
 def uploading_files(limit=20):
-    return _rows("SELECT bucket, key, size, session_id FROM files WHERE status='uploading' "
-                 "ORDER BY id LIMIT ?", (limit,))
+    return _rows("SELECT f.bucket, f.key, f.size, f.session_id, "
+                 "       COALESCE(s.location, '') AS location "
+                 "FROM files f LEFT JOIN sessions s ON s.id = f.session_id "
+                 "WHERE f.status='uploading' ORDER BY f.id LIMIT ?", (limit,))
 
 
 def fail_stale_uploads():
-    """Mark files left in 'uploading' by a crash/restart as failed so the next
-    session retries them (and the UI doesn't show ghost uploads)."""
+    """Mark files this master left in 'uploading' by a crash/restart as failed
+    so the next session retries them (and the UI doesn't show ghost uploads).
+    Files an agent is uploading are left alone."""
     cur = _exec("UPDATE files SET status='failed', error='interrupted by restart' "
-                "WHERE status='uploading'")
+                "WHERE status='uploading' AND (session_id IS NULL OR session_id NOT IN "
+                "(SELECT id FROM sessions WHERE location <> ''))")
     return cur.rowcount
 
 
@@ -691,10 +779,29 @@ def stats(bucket=None):
 
 # ---- downloads ----
 
-def create_dl_session(dest):
-    cur = _exec("INSERT INTO dl_sessions(dest, status, started_at) VALUES(?,?,?)",
-                (dest, "queued", now()))
+def create_dl_session(dest, location="", items=None):
+    cur = _exec("INSERT INTO dl_sessions(dest, status, started_at, location, items) "
+                "VALUES(?,?,?,?,?)",
+                (dest, "queued", now(), location or "",
+                 json.dumps(items) if items is not None else None))
     return cur.lastrowid
+
+
+def dl_session_location(sid):
+    r = _row("SELECT location FROM dl_sessions WHERE id=?", (sid,))
+    return r["location"] if r else None
+
+
+def download_location(did):
+    r = _row("SELECT s.location FROM downloads d JOIN dl_sessions s ON s.id = d.session_id "
+             "WHERE d.id=?", (did,))
+    return r["location"] if r else None
+
+
+def queued_dl_sessions(location):
+    return [r["id"] for r in _rows(
+        "SELECT id FROM dl_sessions WHERE location=? AND status='queued' ORDER BY id",
+        (location,))]
 
 
 def update_dl_session(sid, **kw):
@@ -735,11 +842,16 @@ def list_downloads(session_id=None, limit=500):
     return _rows("SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,))
 
 
-def downloaded_paths():
-    """Every local path the index believes it wrote. Used to tell apart files on
-    disk that ColdVault put there from ones nothing references any more."""
-    return {r["local_path"] for r in
-            _rows("SELECT DISTINCT local_path FROM downloads WHERE local_path IS NOT NULL")}
+_AT = "session_id IN (SELECT id FROM dl_sessions WHERE location=?)"
+
+
+def downloaded_paths(location=""):
+    """Every local path the index believes it wrote on this machine (or on
+    agent `location`). Used to tell apart files on disk that ColdVault put there
+    from ones nothing references any more."""
+    return {r["local_path"] for r in _rows(
+        f"SELECT DISTINCT local_path FROM downloads WHERE local_path IS NOT NULL AND {_AT}",
+        (location or "",))}
 
 
 def find_keys_any_bucket(keys, chunk=400):
@@ -774,25 +886,95 @@ def prune_orphan_dl_sessions():
         "               WHERE session_id IS NOT NULL)").rowcount
 
 
-def latest_downloads_map():
+def latest_downloads_map(location=""):
     """(bucket, key) -> {local_path, status} of the most recent download (any
-    status). Later rows overwrite earlier, so the latest wins."""
-    rows = _rows("SELECT bucket, key, local_path, status FROM downloads ORDER BY id")
+    status) to this machine, or to agent `location`. Later rows overwrite
+    earlier, so the latest wins."""
+    rows = _rows(f"SELECT bucket, key, local_path, status FROM downloads WHERE {_AT} "
+                 f"ORDER BY id", (location or "",))
     return {(r["bucket"], r["key"]): {"local_path": r["local_path"], "status": r["status"]}
             for r in rows}
 
 
-def downloaded_rows_to_check():
+def downloaded_rows_to_check(location=""):
     """Download records that claim a local file exists, for integrity checking.
     'skipped' means the file was already present at download time."""
-    return _rows("SELECT id, bucket, key, local_path FROM downloads "
-                 "WHERE status IN ('verified','downloaded','skipped')")
+    return _rows(f"SELECT id, bucket, key, local_path FROM downloads "
+                 f"WHERE status IN ('verified','downloaded','skipped') AND {_AT}",
+                 (location or "",))
 
 
 def fail_stale_downloads():
-    cur = _exec("UPDATE downloads SET status='failed', error='interrupted by restart' "
-                "WHERE status='downloading'")
+    """This master's downloads (and sessions) cut off by a restart. An agent's
+    are left alone — the agent is still running them."""
+    cur = _exec(f"UPDATE downloads SET status='failed', error='interrupted by restart' "
+                f"WHERE status='downloading' AND {_AT}", ("",))
+    _exec("UPDATE dl_sessions SET status='failed', finished_at=? "
+          "WHERE location='' AND status IN ('queued','running')", (now(),))
     return cur.rowcount
+
+
+def fail_location_work(location, reason):
+    """An agent restarted, or was silent too long: whatever it had in flight
+    is not going to finish. Fail its running upload/download sessions and the
+    files inside them; queued sessions stay queued and are handed out again."""
+    t = now()
+    with _lock:
+        sids = [r["id"] for r in _rows(
+            "SELECT id FROM sessions WHERE location=? AND status IN ('scanning','running')",
+            (location,))]
+        dsids = [r["id"] for r in _rows(
+            "SELECT id FROM dl_sessions WHERE location=? AND status='running'", (location,))]
+        for sid in sids:
+            _exec("UPDATE files SET status='failed', error=? "
+                  "WHERE session_id=? AND status='uploading'", (reason, sid))
+            _exec("UPDATE sessions SET status='failed', finished_at=? WHERE id=?", (t, sid))
+        for dsid in dsids:
+            _exec("UPDATE downloads SET status='failed', error=?, finished_at=? "
+                  "WHERE session_id=? AND status='downloading'", (reason, t, dsid))
+            _exec("UPDATE dl_sessions SET status='failed', finished_at=? WHERE id=?", (t, dsid))
+    return sids, dsids
+
+
+# ---- agents ----
+
+def touch_agent(name, boot_id, version, info):
+    """Record an agent check-in. Returns the boot id it had before (None the
+    first time), so a restart of the agent can be noticed."""
+    with _lock:
+        prev = _row("SELECT boot_id FROM agents WHERE name=?", (name,))
+        t = now()
+        if prev:
+            _exec("UPDATE agents SET boot_id=?, version=?, last_seen=?, info=? WHERE name=?",
+                  (boot_id, version, t, json.dumps(info), name))
+        else:
+            _exec("INSERT INTO agents(name, boot_id, version, first_seen, last_seen, info) "
+                  "VALUES(?,?,?,?,?,?)", (name, boot_id, version, t, t, json.dumps(info)))
+        return prev["boot_id"] if prev else None
+
+
+def list_agents():
+    out = []
+    for r in _rows("SELECT * FROM agents ORDER BY name"):
+        try:
+            r["info"] = json.loads(r["info"] or "{}")
+        except ValueError:
+            r["info"] = {}
+        out.append(r)
+    return out
+
+
+def forget_agent(name):
+    return _exec("DELETE FROM agents WHERE name=?", (name,)).rowcount
+
+
+def location_activity(location):
+    """Counts of sessions an agent still owes us: queued or in flight."""
+    up = _row("SELECT COUNT(*) c FROM sessions WHERE location=? AND status IN "
+              "('queued','scanning','running')", (location,))["c"]
+    dl = _row("SELECT COUNT(*) c FROM dl_sessions WHERE location=? AND status IN "
+              "('queued','running')", (location,))["c"]
+    return {"uploads": up, "downloads": dl}
 
 
 def restored_objects():

@@ -2,6 +2,7 @@
 structure as directories, and verify each file against the SHA-256 recorded
 in the index when it was uploaded."""
 import hashlib
+import json
 import os
 import queue
 import tempfile
@@ -12,10 +13,10 @@ from datetime import datetime
 
 import awsapi
 import config
-import db
 import manifest
 from awsapi import AwsError
 from logs import log_event
+from store import db
 
 READ_BLOCK = 8 * 1024 * 1024
 
@@ -185,38 +186,52 @@ def _hash_file(path, extra_algo=None):
 
 class Downloader:
     """One session at a time; files within a session download in parallel,
-    and large files are fetched with parallel ranged GETs."""
+    and large files are fetched with parallel ranged GETs. Runs on the master
+    and on every agent: the master creates sessions (with the item list stored
+    on the session), and an agent runs the ones created for it."""
 
     def __init__(self):
         self.q = queue.Queue()
         self.current_session = None
+        self.on_session_done = None   # optional callback(sid)
         threading.Thread(target=self._loop, daemon=True, name="downloader").start()
 
-    def enqueue(self, dest, items):
-        """items: [{"bucket":…, "key":…, "size":…, "sha256":…}, …]"""
-        sid = db.create_dl_session(dest)
+    def enqueue(self, dest, items, location=""):
+        """Master: queue a download of `items` ([{"bucket", "key", "size",
+        "sha256"}, …]) into `dest` on this machine, or on agent `location` —
+        which picks it up at its next check-in."""
+        items = [{k: i.get(k) for k in ("bucket", "key", "size", "sha256")} for i in items]
+        sid = db.create_dl_session(dest, location=location, items=items)
         total_bytes = sum(int(i.get("size") or 0) for i in items)
         db.update_dl_session(sid, total_files=len(items), total_bytes=total_bytes)
         log_event("INFO", "download",
                   f"Download session #{sid} queued: {len(items)} object(s), "
-                  f"{total_bytes:,} bytes -> {dest}")
-        self.q.put((sid, dest, items))
+                  f"{total_bytes:,} bytes -> {dest}" + (f" on {location}" if location else ""))
+        if not location:
+            self.q.put(sid)
         return sid
+
+    def run_assigned(self, sid):
+        """Agent: run a download session the master created for this machine."""
+        self.q.put(sid)
 
     def queue_size(self):
         return self.q.qsize()
 
     def _loop(self):
         while True:
-            sid, dest, items = self.q.get()
+            sid = self.q.get()
             self.current_session = sid
             try:
-                self._run(sid, dest, items)
+                s = db.get_dl_session(sid)
+                self._run(sid, s["dest"], json.loads(s["items"] or "[]"))
             except Exception as e:
                 log_event("ERROR", "download", f"Download session #{sid} crashed: {e}")
                 db.update_dl_session(sid, status="failed", finished_at=db.now())
             finally:
                 self.current_session = None
+                if self.on_session_done:
+                    self.on_session_done(sid)
 
     def _run(self, sid, dest, items):
         db.update_dl_session(sid, status="running")
@@ -245,9 +260,8 @@ class Downloader:
                 local_size = os.path.getsize(path)
                 if size and local_size == size:
                     if not expected_sha or _hash_file(path)[0] == expected_sha:
-                        db.add_download(sid, bucket, key, path, size)
-                        db.update_download(db.list_downloads(sid, 1)[0]["id"],
-                                           status="skipped", finished_at=db.now())
+                        skip_id = db.add_download(sid, bucket, key, path, size)
+                        db.update_download(skip_id, status="skipped", finished_at=db.now())
                         db.bump_dl_session(sid, skipped=1, bytes_done=size)
                         log_event("DEBUG", "download",
                                   f"skip (already downloaded): {path}")
@@ -321,9 +335,8 @@ class Downloader:
                 db.update_download(did, status="failed", error=str(e)[:1000],
                                    finished_at=db.now())
             else:
-                db.add_download(sid, bucket, key, "", item.get("size"))
-                db.update_download(db.list_downloads(sid, 1)[0]["id"],
-                                   status="failed", error=str(e)[:1000],
+                fail_id = db.add_download(sid, bucket, key, "", item.get("size"))
+                db.update_download(fail_id, status="failed", error=str(e)[:1000],
                                    finished_at=db.now())
             db.bump_dl_session(sid, failed=1)
             log_event("ERROR", "download", f"FAILED: s3://{bucket}/{key}", str(e)[:2000])

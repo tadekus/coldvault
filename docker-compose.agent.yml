@@ -1,0 +1,39 @@
+# ColdVault as an AGENT — a second machine (e.g. a Raspberry Pi) that uploads
+# its own drives and downloads restores onto its own disk, for a master
+# ColdVault that keeps the one database and the web UI.
+# See README → "Second machine (agent)".
+#
+#   cp .env.agent.example .env      # then edit it
+#   docker compose -f docker-compose.agent.yml up -d --build
+services:
+  coldvault-agent:
+    build: .
+    container_name: coldvault-agent
+    env_file: .env
+    environment:
+      COLDVAULT_ROLE: agent
+      COLDVAULT_PORT: 9999
+      TZ: ${TZ:-}
+    ports:
+      # A small status page (and the eject endpoints for the usb-automount
+      # helper). Everything else is managed from the master's web UI.
+      - "${COLDVAULT_PORT:-9999}:9999"
+    volumes:
+      # Log + temp space for large uploads (staged in parts of PART_SIZE_MB).
+      # On a Raspberry Pi keep this on an SSD, not the SD card.
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # Restored files downloaded to this machine land here (READ-WRITE).
+      - ./downloads:/downloads
+      # Drives automounted under /media/<user>/<label>; rslave makes drives
+      # plugged in after the container started visible to the canary watcher.
+      - type: bind
+        source: /media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rslave
+      # Extra folders for manual uploads: add them here (same path on both
+      # sides) and list them in COLDVAULT_BROWSE_ROOTS.
+    restart: unless-stopped

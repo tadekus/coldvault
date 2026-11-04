@@ -32,7 +32,7 @@
 
   <div class="grid2">
     <div class="box">
-      <h3>Watcher</h3>
+      <h3>Watcher <span id="watcherWhere" class="muted"></span></h3>
       <div id="watcherInfo" class="kv"></div>
       <h4>Active drives</h4>
       <div id="activeMounts" class="muted">none</div>
@@ -61,8 +61,19 @@
   </div>
 
 
+  <div class="box" id="agentsBox">
+    <h3>Agents <span class="muted" style="font-weight:400;font-size:12px">second machines that
+      upload and download on this master's behalf</span></h3>
+    <div id="agentsInfo" class="muted">loading…</div>
+  </div>
+
   <div class="box">
     <h3>Manual upload</h3>
+    <div class="row">
+      <label for="uploadFrom" class="muted">Upload from</label>
+      <select id="uploadFrom" title="the machine that has the files"></select>
+      <span id="uploadFromNote" class="muted" style="font-size:12px"></span>
+    </div>
     <h4>Accessible locations</h4>
     <div id="browseRoots" class="browse muted">loading…</div>
     <div class="row">
@@ -169,7 +180,7 @@
   <div class="tablewrap">
     <table id="sessionsTable">
       <thead><tr>
-        <th>#</th><th>Source</th><th>Bucket</th><th>Label</th><th>Trigger</th><th>Status</th>
+        <th>#</th><th>Machine</th><th>Source</th><th>Bucket</th><th>Label</th><th>Trigger</th><th>Status</th>
         <th>Progress</th><th>Uploaded</th><th>Skipped</th><th>Failed</th><th>Started</th>
       </tr></thead>
       <tbody></tbody>
@@ -198,6 +209,12 @@
 <section id="tab-downloads" class="panel">
   <div class="box">
     <h3>Download restored objects</h3>
+    <div class="row">
+      <label for="dlLocation" class="muted">Download to</label>
+      <select id="dlLocation" title="the machine whose disk the files land on — also what
+'Local file', 'Check local files' and the leftover-file scan below look at"></select>
+      <span id="dlLocationNote" class="muted" style="font-size:12px"></span>
+    </div>
     <div class="row">
       <input id="destPath" placeholder="/downloads" style="flex:2">
       <input id="destSub" placeholder="optional subfolder, e.g. SD13_conform" style="flex:1">
@@ -236,7 +253,7 @@
   <div class="tablewrap">
     <table id="dlSessionsTable">
       <thead><tr>
-        <th>#</th><th>Destination</th><th>Status</th><th>Progress</th>
+        <th>#</th><th>Machine</th><th>Destination</th><th>Status</th><th>Progress</th>
         <th>Done</th><th>Skipped</th><th>Failed</th><th>Started</th>
       </tr></thead>
       <tbody></tbody>

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Compare your .env with .env.example — run it after every `git pull`.
+# Compare your .env with .env.example (.env.agent.example on an agent) — run it
+# after every `git pull`.
 #
 #   ./env-check.sh            list what's new or unknown
 #   ./env-check.sh --append   also add the new settings to .env, commented out
@@ -34,8 +35,13 @@ for arg in "$@"; do
 done
 env_file=${env_file:-$here/.env}
 
-[ -f "$example" ] || { echo "no .env.example at $example" >&2; exit 2; }
 [ -f "$env_file" ] || { echo "no $env_file — start with: cp .env.example .env" >&2; exit 2; }
+# An agent (second machine) has its own, much shorter list of settings.
+if grep -qE '^COLDVAULT_ROLE=agent' "$env_file" && [ -f "$here/.env.agent.example" ]; then
+  example="$here/.env.agent.example"
+fi
+[ -f "$example" ] || { echo "no $(basename "$example") at $example" >&2; exit 2; }
+ex=$(basename "$example")
 
 # NAME=... lines, as a sorted list of names.
 names() { { grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$1" || true; } | tr -d '=' | sort -u; }
@@ -73,7 +79,7 @@ rel_env=${env_file#"$here"/}
 if [ -n "$missing" ]; then
   status=1
   count=$(echo "$missing" | wc -l | tr -d ' ')
-  echo "== $count setting(s) in .env.example that $rel_env doesn't have =="
+  echo "== $count setting(s) in $ex that $rel_env doesn't have =="
   echo "   (ColdVault uses the default shown; add one only to change it)"
   echo
   describe "$(echo $missing)" ""
@@ -82,13 +88,13 @@ fi
 
 if [ -n "$unknown" ]; then
   status=1
-  echo "== in $rel_env but not in .env.example — a typo, renamed, or your own =="
+  echo "== in $rel_env but not in $ex — a typo, renamed, or your own =="
   echo "$unknown" | sed 's/^/   /'
   echo
 fi
 
 if [ "$status" -eq 0 ]; then
-  echo "✔ $rel_env mentions every setting in .env.example, and nothing unknown."
+  echo "✔ $rel_env mentions every setting in $ex, and nothing unknown."
   exit 0
 fi
 
@@ -97,7 +103,7 @@ if [ "$append" -eq 1 ] && [ -n "$missing" ]; then
   [ -z "$(tail -c1 "$env_file")" ] || echo >> "$env_file"
   {
     echo
-    echo "# ===== added by env-check.sh on $(date +%Y-%m-%d): new in .env.example ====="
+    echo "# ===== added by env-check.sh on $(date +%Y-%m-%d): new in $ex ====="
     echo "# Commented out, so ColdVault keeps using the default shown. Uncomment and"
     echo "# edit any you want to change, then: docker compose up -d"
     describe "$(echo $missing)" "# "

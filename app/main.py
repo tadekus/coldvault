@@ -1,69 +1,88 @@
-import os
-import tempfile
-import time
-from datetime import datetime
-
-from flask import Flask, Response, jsonify, render_template, request
-
-import audit as audit_mod
-import awsapi
-import backup as backup_mod
-import buckets as buckets_mod
 import config
-import db
-import downloader as downloader_mod
-import notify
-import editlist
-import manifest
-import manifest_verify
-import restore
-import retention
-import treeexport
-import uploader as uploader_mod
-import version
-import watcher as watcher_mod
-from awsapi import AwsError
-from logs import log_event
+
+# An agent (a second machine, COLDVAULT_ROLE=agent) runs a different, much
+# smaller program and must never open a database — so decide before anything
+# below imports one.
+if config.ROLE == "agent":
+    import agent
+    agent.main()
+    raise SystemExit(0)
+
+import os  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
+
+import agents as agents_mod  # noqa: E402
+import audit as audit_mod  # noqa: E402
+import awsapi  # noqa: E402
+import backup as backup_mod  # noqa: E402
+import buckets as buckets_mod  # noqa: E402
+import db  # noqa: E402
+import downloader as downloader_mod  # noqa: E402
+import drives  # noqa: E402
+import eject  # noqa: E402
+import editlist  # noqa: E402
+import localfs  # noqa: E402
+import manifest  # noqa: E402
+import manifest_verify  # noqa: E402
+import notify  # noqa: E402
+import restore  # noqa: E402
+import retention  # noqa: E402
+import treeexport  # noqa: E402
+import uploader as uploader_mod  # noqa: E402
+import version  # noqa: E402
+import watcher as watcher_mod  # noqa: E402
+from awsapi import AwsError  # noqa: E402
+from logs import log_event  # noqa: E402
 
 app = Flask(__name__)
 START_TIME = time.time()
 up = uploader_mod.Uploader()
-watch = watcher_mod.Watcher(up)
 down = downloader_mod.Downloader()
 
 
-_eject_pending = {}   # mount -> {label, session_id, files, bytes, since}
-
-
 def _after_upload(sid, trigger):
-    if trigger != "canary":
-        return
-    # Flag the drive for unmount only when the session was completely clean and
-    # nothing else is queued for it. A host helper performs the actual unmount.
-    if config.EJECT_AFTER_UPLOAD:
-        try:
-            s = db.get_session(sid)
-            busy = up.queue_size() or any(
-                m == s["source"] for m in _eject_pending)
-            if s and s["status"] == "done" and not s["failed_files"] and not busy:
-                _eject_pending[s["source"]] = {
-                    "label": s["label"], "session_id": sid,
-                    "files": s["done_files"], "bytes": s["done_bytes"],
-                    "since": db.now()}
-                log_event("INFO", "eject",
-                          f"{s['source']} ready to unmount — session #{sid} completed "
-                          f"with {s['done_files']} file(s), 0 failed")
-            elif s and (s["failed_files"] or s["status"] != "done"):
-                log_event("WARNING", "eject",
-                          f"not flagging {s['source']} for unmount — session #{sid} "
-                          f"status={s['status']}, {s['failed_files']} failed")
-        except Exception as e:
-            log_event("ERROR", "eject", f"eject flagging failed for #{sid}: {e}")
-    if config.NOTIFY:
+    """A session this master ran itself has finished."""
+    if trigger == "canary":
+        eject.after_session(db.get_session(sid), busy=up.queue_size() > 0)
+        if config.NOTIFY:
+            notify.notify_upload_complete(sid)
+
+
+def _after_agent_upload(sid):
+    """A session an agent ran has finished. Unmounting is the agent's own
+    business (its drive, its host); the report email is the master's."""
+    s = db.get_session(sid)
+    if s and s["trigger"] == "canary" and config.NOTIFY:
         notify.notify_upload_complete(sid)
 
 
 up.on_session_done = _after_upload
+
+
+def _start_session(location, source, label, trigger, items=None, bucket=None):
+    """Queue an upload here, or on agent `location` (which picks it up at its
+    next check-in — woken right away)."""
+    if not location:
+        return up.enqueue(source, label, trigger, items=items, bucket=bucket)
+    bucket = bucket or config.BUCKET
+    label = label or os.path.basename(source.rstrip("/")) or "upload"
+    sid = db.create_session(bucket, source, label, trigger, location=location, items=items)
+    what = f"{len(items)} selected item(s) under {source}" if items else source
+    log_event("INFO", "upload", f"Session #{sid} queued on {location}: {what} -> "
+                                f"s3://{bucket} (label='{label}', trigger={trigger})")
+    hub.wake(location)
+    return sid
+
+
+tracker = drives.DriveTracker(
+    lambda location, mount, label, bucket: _start_session(location, mount, label, "canary",
+                                                          bucket=bucket))
+watch = watcher_mod.Watcher(lambda found: tracker.update("", found))
+hub = agents_mod.Hub(tracker, _after_agent_upload)
 
 # A bucket picked in the UI is persisted in the DB and overrides the .env value
 _saved_bucket = db.get_setting("bucket")
@@ -85,10 +104,28 @@ if _stale_dl:
               f"marked {_stale_dl} download(s) interrupted by restart as failed")
 
 
-def _allowed_path(path):
-    real = os.path.realpath(path)
-    return any(real == r or real.startswith(r.rstrip("/") + "/")
-               for r in config.BROWSE_ROOTS)
+def _location(value):
+    """'' for this master (also accepted: its own name), else a known agent."""
+    value = (value or "").strip()
+    if value in ("", config.NAME):
+        return ""
+    if not agents_mod.NAME_RE.match(value):
+        raise localfs.FsError(f"unknown location '{value}'")
+    return value
+
+
+def _fs(location, op, **kwargs):
+    """Run a filesystem operation where the files are: here, or on an agent."""
+    if not location:
+        return localfs.OPS[op](**kwargs)
+    return hub.call(location, op, kwargs,
+                    timeout=180 if op in ("orphans", "delete_orphans", "verify_downloads") else 30)
+
+
+@app.errorhandler(localfs.FsError)
+@app.errorhandler(agents_mod.AgentError)
+def _fs_error(e):
+    return jsonify({"error": str(e)}), e.status
 
 
 @app.get("/")
@@ -186,11 +223,18 @@ def api_health():
 
     body["backup"], backup_issue = backup_mod.health()
 
+    # An agent that went quiet while it still owes us work needs looking at.
+    body["agents"] = [{"name": a["name"], "online": a["online"], "last_seen": a["last_seen"],
+                       "version": a["version"], "pending": a["work"]}
+                      for a in hub.listing()]
+    agent_issue = any(not a["online"] and (a["pending"]["uploads"] or a["pending"]["downloads"])
+                      for a in body["agents"])
+
     issues = (integrity["failed_uploads"] + integrity["manifest_mismatch"]
               + integrity["audit_missing"] + integrity["audit_size_mismatch"]
               + integrity["audit_class_drift"] + restores["failed"]
               + (0 if body.get("aws", {}).get("ok", True) else 1)
-              + (1 if backup_issue else 0))
+              + (1 if backup_issue else 0) + (1 if agent_issue else 0))
     busy = uploads["running"] or uploads["queued"] > 0 or downloads["running"]
     body["status"] = "attention" if issues else ("busy" if busy else "ok")
 
@@ -213,7 +257,9 @@ def api_status():
         "notify_enabled": config.NOTIFY,
         "notify_ready": notify.config_problem() is None,
         "email_to": config.EMAIL_TO,
-        "active_mounts": watch.active,
+        "active_mounts": tracker.drives(""),
+        "name": config.NAME,
+        "agents_enabled": bool(config.AGENT_TOKEN),
         "queue_size": up.queue_size(),
         "current_session": up.current_session,
         "uploading": db.uploading_files(),
@@ -293,66 +339,22 @@ def api_index_clear():
 
 @app.get("/api/browse/roots")
 def api_browse_roots():
-    """The configured upload roots (watch dirs + COLDVAULT_BROWSE_ROOTS), each
-    checked for whether it actually exists and is readable inside the container.
-    Deduplicated, order preserved."""
-    seen, roots = set(), []
-    for r in config.BROWSE_ROOTS:
-        real = os.path.realpath(r)
-        if real in seen:
-            continue
-        seen.add(real)
-        exists = os.path.isdir(r)
-        roots.append({
-            "path": r,
-            "exists": exists,
-            "readable": exists and os.access(r, os.R_OK | os.X_OK),
-            "is_watch": r in config.WATCH_DIRS,
-        })
-    return jsonify({"roots": roots})
+    """The upload roots of this machine or of agent ?location=…, each checked
+    for whether it exists and is readable there."""
+    return jsonify(_fs(_location(request.args.get("location")), "browse_roots"))
 
 
 @app.get("/api/browse")
 def api_browse():
-    path = request.args.get("path") or (config.BROWSE_ROOTS[0] if config.BROWSE_ROOTS else "/media")
-    if not _allowed_path(path):
-        return jsonify({"error": f"path outside allowed roots ({', '.join(config.BROWSE_ROOTS)})"}), 403
-    if not os.path.isdir(path):
-        return jsonify({"error": "not a directory"}), 400
-    dirs, files, total_bytes, nfiles = [], [], 0, 0
-    try:
-        for e in sorted(os.scandir(path), key=lambda x: x.name.lower()):
-            if e.is_dir(follow_symlinks=False):
-                dirs.append(e.name)
-            elif e.is_file(follow_symlinks=False):
-                nfiles += 1
-                try:
-                    sz = e.stat(follow_symlinks=False).st_size
-                except OSError:
-                    sz = 0
-                total_bytes += sz
-                if len(files) < 500:
-                    files.append({"name": e.name, "size": sz})
-    except OSError as e:
-        return jsonify({"error": str(e)}), 400
-    # A canary in this folder already says where the drive belongs, so a manual
-    # upload of it can start from the same label and bucket the watcher would use.
-    canary = None
-    cpath = os.path.join(path, config.CANARY_NAME)
-    if os.path.isfile(cpath):
-        canary = watcher_mod.read_canary(cpath, path)
-    parent = os.path.dirname(path.rstrip("/"))
-    return jsonify({"path": path, "parent": parent if _allowed_path(parent) else None,
-                    "dirs": dirs, "files": files, "file_count": nfiles,
-                    "files_truncated": nfiles > len(files), "total_bytes": total_bytes,
-                    "canary": canary})
+    return jsonify(_fs(_location(request.args.get("location")), "browse",
+                       path=request.args.get("path") or None))
 
 
 @app.post("/api/upload")
 def api_upload():
     data = request.get_json(force=True)
     label = (data.get("label") or "").strip()
-    items = data.get("items")
+    location = _location(data.get("location"))
 
     # The destination is explicit for a manual upload (the UI always sends it);
     # omitting it falls back to the active bucket.
@@ -365,28 +367,12 @@ def api_upload():
         return jsonify({"error": "no bucket set — pick one in Connection, or set "
                                  "COLDVAULT_BUCKET"}), 400
 
-    if items:  # explicit selection of files/folders
-        clean = []
-        for it in items:
-            it = (it or "").strip()
-            if not it or not _allowed_path(it):
-                return jsonify({"error": f"item outside allowed roots: {it}"}), 400
-            if not os.path.exists(it):
-                return jsonify({"error": f"no longer exists: {it}"}), 400
-            clean.append(it)
-        if not clean:
-            return jsonify({"error": "no items selected"}), 400
-        sid = up.enqueue(None, label, "manual", items=clean, bucket=bucket)
-        return jsonify({"session_id": sid, "bucket": bucket})
-
-    # whole folder
-    path = (data.get("path") or "").strip()
-    if not path or not _allowed_path(path):
-        return jsonify({"error": f"path must be inside: {', '.join(config.BROWSE_ROOTS)}"}), 400
-    if not os.path.isdir(path):
-        return jsonify({"error": "not a directory"}), 400
-    sid = up.enqueue(path, label, "manual", bucket=bucket)
-    return jsonify({"session_id": sid, "bucket": bucket})
+    # Checked (and a selection reduced to its common folder) on the machine
+    # that has the files.
+    plan = _fs(location, "prepare_upload", path=data.get("path"), items=data.get("items"))
+    sid = _start_session(location, plan["source"], label, "manual",
+                         items=plan["items"], bucket=bucket)
+    return jsonify({"session_id": sid, "bucket": bucket, "location": location or config.NAME})
 
 
 @app.get("/api/files")
@@ -468,7 +454,7 @@ def api_manifest_verify():
 
     records, sources = [], []
     if folder:
-        if not _allowed_path(folder) or not os.path.isdir(folder):
+        if not localfs.allowed_path(folder) or not os.path.isdir(folder):
             return jsonify({"error": f"folder must be inside: {', '.join(config.BROWSE_ROOTS)}"}), 400
         records, found = manifest.load_manifest_records(folder, config.MANIFEST_EXTS)
         sources = [os.path.relpath(p, folder) for p in found]
@@ -510,26 +496,16 @@ def api_manifest_jobs():
 def api_eject_pending():
     """Drives whose canary upload finished cleanly and can now be unmounted.
     Polled by the host-side helper (the container cannot unmount host mounts)."""
-    return jsonify({"enabled": config.EJECT_AFTER_UPLOAD,
-                    "pending": [dict(mount=m, **v) for m, v in _eject_pending.items()]})
+    return jsonify(eject.listing())
 
 
 @app.post("/api/eject/done")
 def api_eject_done():
     """Host helper reports the outcome of an unmount."""
     data = request.get_json(force=True)
-    mount = (data.get("mount") or "").strip()
-    ok = bool(data.get("ok"))
-    detail = (data.get("detail") or "").strip()
-    info = _eject_pending.pop(mount, None)
-    if ok:
-        log_event("INFO", "eject", f"unmounted {mount}"
-                  + (f" (label '{info['label']}')" if info else "") + " — safe to remove")
-    else:
-        log_event("ERROR", "eject", f"host failed to unmount {mount}: {detail or 'unknown'}")
-        if info:
-            _eject_pending[mount] = info   # keep it pending so the helper retries
-    return jsonify({"ok": True, "remaining": len(_eject_pending)})
+    remaining = eject.done((data.get("mount") or "").strip(), bool(data.get("ok")),
+                           (data.get("detail") or "").strip())
+    return jsonify({"ok": True, "remaining": remaining})
 
 
 @app.get("/api/tree")
@@ -737,6 +713,62 @@ def api_backup_settings():
     return jsonify({"ok": True, **saved, "next_run": backup_mod.status()["next_run"]})
 
 
+# ---- second machines (agents) ----
+
+@app.get("/api/agents")
+def api_agents():
+    return jsonify({"agents": hub.listing(), "enabled": bool(config.AGENT_TOKEN),
+                    "master": config.NAME})
+
+
+@app.post("/api/agents/forget")
+def api_agents_forget():
+    name = ((request.get_json(force=True) or {}).get("name") or "").strip()
+    n = hub.forget(name)
+    log_event("INFO", "agent", f"forgot agent {name}")
+    return jsonify({"ok": bool(n)})
+
+
+@app.get("/api/locations")
+def api_locations():
+    """Machines that can hold files: this master, then each known agent."""
+    return jsonify({"locations": [{"value": "", "name": config.NAME, "online": True,
+                                   "local": True}] +
+                    [{"value": a["name"], "name": a["name"], "online": a["online"],
+                      "local": False} for a in hub.listing()]})
+
+
+def _agent():
+    """Authenticate an agent request; returns its name."""
+    return hub.authenticate(request)
+
+
+@app.post("/api/agent/poll")
+def api_agent_poll():
+    name = _agent()
+    return jsonify(hub.poll(name, request.get_json(force=True) or {}))
+
+
+@app.post("/api/agent/db")
+def api_agent_db():
+    name = _agent()
+    return jsonify({"result": hub.db_call(name, request.get_json(force=True) or {})})
+
+
+@app.post("/api/agent/reply")
+def api_agent_reply():
+    name = _agent()
+    hub.reply(name, request.get_json(force=True) or {})
+    return jsonify({"ok": True})
+
+
+@app.post("/api/agent/events")
+def api_agent_events():
+    name = _agent()
+    hub.events(name, (request.get_json(force=True) or {}).get("events"))
+    return jsonify({"ok": True})
+
+
 @app.get("/api/sessions")
 def api_sessions():
     return jsonify(db.list_sessions())
@@ -837,24 +869,26 @@ def api_notify_report():
     return jsonify({"ok": False, "error": detail}), 502
 
 
-def _allowed_dest(path):
-    real = os.path.realpath(path)
-    root = os.path.realpath(config.DOWNLOAD_DIR)
-    return real == root or real.startswith(root.rstrip("/") + "/")
-
-
 @app.get("/api/restored")
 def api_restored():
     """Objects whose latest restore completed — i.e. downloadable right now.
-    Each item is tagged with its local state (present / deleted / none) and
-    whether its restore window has expired."""
+    Each item is tagged with its state on the chosen machine (?location=):
+    present / deleted / none, and whether its restore window has expired."""
+    location = _location(request.args.get("location"))
     items = db.restored_objects()
-    dmap = db.latest_downloads_map()
+    dmap = db.latest_downloads_map(location)
+    ok = ("verified", "downloaded", "skipped")
+    claimed = [d["local_path"] for d in dmap.values() if d["status"] in ok]
+    try:  # ask the machine that has the files which of them are still there
+        exists = dict(zip(claimed, _fs(location, "paths_exist", paths=claimed)))
+        checked = True
+    except agents_mod.AgentError:
+        exists, checked = {}, False   # agent offline: go by the last known state
     for i in items:
         d = dmap.get((i["bucket"], i["key"]))
         i["downloaded_to"] = None
-        if d and d["status"] in ("verified", "downloaded", "skipped"):
-            if d["local_path"] and os.path.exists(d["local_path"]):
+        if d and d["status"] in ok:
+            if not checked or exists.get(d["local_path"]):
                 i["local_state"] = "present"
                 i["downloaded_to"] = d["local_path"]
             else:  # was downloaded, file now gone (integrity check not yet run)
@@ -866,26 +900,27 @@ def api_restored():
         else:  # never downloaded, or a failed attempt -> available to (re)download
             i["local_state"] = "none"
         i["expired"] = downloader_mod.restore_expired(i.get("expiry"))
-    return jsonify({"items": items, "download_dir": config.DOWNLOAD_DIR})
+    download_dir = config.DOWNLOAD_DIR
+    if location:
+        agent = next((a for a in hub.listing() if a["name"] == location), None)
+        download_dir = ((agent or {}).get("info") or {}).get("download_dir") or "/downloads"
+    return jsonify({"items": items, "download_dir": download_dir,
+                    "location": location or config.NAME, "checked": checked})
 
 
 @app.post("/api/download/verify")
 def api_download_verify():
-    """Re-check that downloaded files still exist locally; flag deleted ones."""
-    checked, deleted = downloader_mod.verify_local_downloads()
-    return jsonify({"checked": checked, "deleted": deleted})
+    """Re-check that downloaded files still exist on the chosen machine; flag
+    deleted ones."""
+    data = request.get_json(silent=True) or {}
+    return jsonify(_fs(_location(data.get("location")), "verify_downloads"))
 
 
 @app.get("/api/download/orphans")
 def api_download_orphans():
     """Files in the download folder that no index row points at, each checked
     against every indexed bucket so you can see what's still archived."""
-    items, totals = downloader_mod.scan_orphans()
-    log_event("INFO", "download",
-              f"orphan scan of {totals['root']}: {totals['orphans']} untracked file(s), "
-              f"{totals['orphan_bytes']:,} bytes ({totals['unarchived']} not in any "
-              f"indexed bucket); {totals['tracked']} tracked")
-    return jsonify({"items": items, **totals})
+    return jsonify(_fs(_location(request.args.get("location")), "orphans"))
 
 
 @app.post("/api/download/orphans/delete")
@@ -895,103 +930,35 @@ def api_download_orphans_delete():
     Refuses a file that isn't archived in an indexed bucket — that copy may be
     the only one left — unless the caller explicitly passes force."""
     data = request.get_json(force=True)
-    paths = data.get("paths") or []
-    if not paths:
-        return jsonify({"error": "nothing selected"}), 400
-    if not data.get("force"):
-        known = {f["path"]: f for f in downloader_mod.scan_orphans()[0]}
-        risky = [p for p in paths if not (known.get(p) or {}).get("archived_in")]
-        if risky:
-            return jsonify({"error": f"{len(risky)} of these are not archived in any "
-                                     f"indexed bucket — the local copy may be the only "
-                                     f"one. Re-send with force to delete anyway.",
-                            "unarchived": risky[:50]}), 409
-    deleted, freed, failed = downloader_mod.delete_local(paths)
-    log_event("WARNING" if failed else "INFO", "download",
-              f"deleted {deleted} local file(s), freed {freed:,} bytes"
-              + (f"; {len(failed)} failed" if failed else ""))
-    return jsonify({"deleted": deleted, "freed": freed, "failed": failed})
+    return jsonify(_fs(_location(data.get("location")), "delete_orphans",
+                       paths=data.get("paths") or [], force=bool(data.get("force"))))
 
 
 @app.get("/api/download/browse")
 def api_download_browse():
-    path = request.args.get("path") or config.DOWNLOAD_DIR
-    if not _allowed_dest(path):
-        return jsonify({"error": f"path must be inside {config.DOWNLOAD_DIR}"}), 403
-    if not os.path.isdir(path):
-        return jsonify({"error": "not a directory"}), 400
-    try:
-        dirs = sorted(e.name for e in os.scandir(path) if e.is_dir(follow_symlinks=False))
-    except OSError as e:
-        return jsonify({"error": str(e)}), 400
-    parent = os.path.dirname(path.rstrip("/"))
-    return jsonify({"path": path, "parent": parent if _allowed_dest(parent) else None,
-                    "dirs": dirs})
+    return jsonify(_fs(_location(request.args.get("location")), "download_browse",
+                       path=request.args.get("path") or None))
 
 
 @app.post("/api/download")
 def api_download():
+    """Queue a download to this machine or an agent (`location`). The space
+    check runs on the machine that has the disk; if not everything fits, the
+    UI is asked whether to fetch what fits (on_insufficient=fit) or cancel."""
     data = request.get_json(force=True)
-    dest = (data.get("dest") or config.DOWNLOAD_DIR).strip()
-    items = data.get("items") or []
-    if not items:
-        return jsonify({"error": "no objects selected"}), 400
-    if not _allowed_dest(dest):
-        return jsonify({"error": f"destination must be inside {config.DOWNLOAD_DIR}"}), 400
-    try:
-        os.makedirs(dest, exist_ok=True)
-    except OSError as e:
-        return jsonify({"error": f"cannot create destination: {e}"}), 400
-    if not os.access(dest, os.W_OK):
-        return jsonify({"error": f"destination not writable: {dest} — check the "
-                                 f"volume mount is read-write"}), 400
-
-    policy = data.get("on_insufficient")   # None | "fit" | "cancel"
-    if policy == "cancel":
-        return jsonify({"cancelled": True})
-
-    # Disk-space pre-flight against the destination filesystem. Files already
-    # present at the target with a matching size will be skipped by the
-    # downloader, so they don't count toward the space needed.
-    def _needs_download(it):
-        try:
-            target = downloader_mod.safe_dest(dest, it["key"])
-            return not (os.path.exists(target) and int(it.get("size") or 0)
-                        and os.path.getsize(target) == int(it["size"]))
-        except Exception:
-            return True
-
-    st = os.statvfs(dest)
-    free = st.f_bavail * st.f_frsize
-    budget = free - config.DOWNLOAD_MIN_FREE
-    to_fetch = [i for i in items if _needs_download(i)]
-    required = sum(int(i.get("size") or 0) for i in to_fetch)
-
-    # Nothing to fetch (all already on disk), or it all fits -> proceed.
-    if not to_fetch or required <= budget:
-        sid = down.enqueue(dest, items)
-        return jsonify({"session_id": sid})
-
-    # Won't all fit — work out which of the to-fetch files do (order-preserving).
-    fit, skipped, used = downloader_mod.plan_within_budget(to_fetch, budget)
-
-    if policy == "fit":
-        if not fit:
-            return jsonify({"error": "not enough free space for even one selected file",
-                            "free": free, "required": required}), 507
-        sid = down.enqueue(dest, fit)
-        log_event("WARNING", "download",
-                  f"insufficient space at {dest} (free {free:,}, need {required:,}): "
-                  f"downloading {len(fit)} file(s) that fit, skipped {len(skipped)}")
-        return jsonify({"session_id": sid, "partial": True,
-                        "downloaded_count": len(fit), "skipped_count": len(skipped),
-                        "skipped": [i.get("key") for i in skipped][:200]})
-
-    # No policy chosen yet — let the UI ask the user (A: fit / B: cancel).
-    return jsonify({"needs_confirmation": True, "dest": dest, "free": free,
-                    "required": required, "reserve": config.DOWNLOAD_MIN_FREE,
-                    "fits_count": len(fit), "fits_bytes": used,
-                    "total_count": len(items), "skipped_count": len(skipped)})
+    location = _location(data.get("location"))
+    plan = _fs(location, "plan_download", dest=data.get("dest") or None,
+               items=data.get("items") or [], policy=data.get("on_insufficient"))
+    if not plan.get("go"):
+        return jsonify(plan)
+    sid = down.enqueue(plan["dest"], plan["items"], location=location)
+    if location:
+        hub.wake(location)
+    body = {"session_id": sid}
+    if plan.get("partial"):
+        body.update({k: plan[k] for k in ("partial", "downloaded_count", "skipped_count",
+                                          "skipped")})
+    return jsonify(body)
 
 
 @app.get("/api/download/sessions")
@@ -1013,6 +980,9 @@ def api_logs():
 
 
 if __name__ == "__main__":
+    if config.AGENT_TOKEN and len(config.AGENT_TOKEN) < 20:
+        log_event("WARNING", "agent", "COLDVAULT_AGENT_TOKEN is short — use a long random "
+                                      "value, e.g. `openssl rand -hex 32`")
     watch.start()
     restore.start_poller()
     backup_mod.start()
