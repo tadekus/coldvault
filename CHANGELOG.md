@@ -4,6 +4,37 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.19.0
+
+- **The earliest charge-free expiry date.** Deep Archive bills every object for at
+  least 180 days from upload (Glacier 90, IA 30), so for any selection there's an
+  earliest date on which deleting costs nothing extra: the newest object's upload
+  plus the minimum. It's shown after **Preview** in Retention and next to the
+  Tree's date picker (*charge-free from 2027-05-04 · use*), with one click to use
+  it. Scheduling an earlier date first says how many objects would still be inside
+  their minimum on that day and by how much, and asks before setting it. The
+  Expiry schedule's column is now **Owed at expiry**: days still billed if deleted
+  on the planned date, not today.
+- **Deleting only when you unlock it: a separate delete role.** With
+  `COLDVAULT_DELETE_ROLE_ARN` (and `COLDVAULT_DELETE_MFA_SERIAL`) set, the everyday
+  IAM user never needs delete rights. For each deletion, after the usual preview,
+  confirmation and typed bucket name, ColdVault asks for the 6-digit code from your
+  authenticator app. It then assumes the role for 15 minutes, deletes, and forgets
+  the credentials. They are passed only to that one `aws` call's environment,
+  never logged or written to disk. A wrong code means nothing is deleted.
+  - **Test delete role** (Retention) proves the setup end to end, unlock plus
+    permission, with the same harmless probe, removing nothing.
+  - The Retention panel shows the everyday user as append-only, plus a line
+    saying deleting goes through the role. It warns if the everyday user can
+    still delete on its own.
+- **`deploy/iam/`**: `make-policies.sh` writes the policies for your account
+  and buckets without calling AWS: the master's everyday user (with an explicit
+  Deny on deletes), an agent user, the delete role, and its MFA-required trust
+  policy. The README walks through creating them, keeping an existing user, MFA,
+  agents and adding buckets.
+- `awsapi.aws()` can run a single command as another identity (`creds=`), without
+  touching the process environment.
+
 ## 1.18.0
 
 - **A second machine (agent).** Another computer — e.g. a Raspberry Pi next to the

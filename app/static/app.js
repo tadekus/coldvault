@@ -1135,6 +1135,19 @@ const trKeys = new Set();       // ticked files, "bucket|key"
 const trOpen = new Set();       // expanded nodes — survives re-renders
 let trOpenedActive = false;     // open the active bucket on first visit only
 const trPerm = {};              // bucket -> can_delete (true|false|null), fetched on demand
+// The delete role ({role, mfa}) when one is configured: then deleting works even
+// though the everyday user can't — it's unlocked for each deletion.
+let deleteRole = null;
+const canDeleteIn = b => trPerm[b] === true || !!deleteRole;
+
+// One-time code for the delete role, asked at the very end of a delete — after
+// every other confirmation. Returns "" when no code is needed, null if cancelled.
+function askDeleteCode(what) {
+  if (!deleteRole || !deleteRole.mfa) return "";
+  const code = prompt(`Unlocking the delete role for ${what}.\n\n`
+                    + `Enter the 6-digit code from your authenticator app:`, "");
+  return code === null ? null : code.trim();
+}
 
 // The selection grouped per bucket: Map(bucket -> {prefixes, keys}).
 function trByBucket() {
@@ -1147,8 +1160,11 @@ function trByBucket() {
 
 async function trPermission(bucket) {
   if (!(bucket in trPerm)) {
-    try { trPerm[bucket] = (await api(`/api/retention/permission?bucket=${encodeURIComponent(bucket)}`)).can_delete; }
-    catch (e) { return null; }
+    try {
+      const r = await api(`/api/retention/permission?bucket=${encodeURIComponent(bucket)}`);
+      trPerm[bucket] = r.can_delete;
+      deleteRole = r.delete_role;
+    } catch (e) { return null; }
   }
   return trPerm[bucket];
 }
@@ -1161,6 +1177,7 @@ async function trUpdateSel() {
       + (groups.size > 1 ? ` in ${groups.size} buckets` : ` in ${[...groups.keys()][0]}`)
     : "nothing selected";
   $("#btnTrRestore").disabled = !n;
+  trFreeFromSoon();
   const del = $("#btnTrDelete");
   del.disabled = !n || groups.size > 1;
   del.title = groups.size > 1 ? "Delete works on one bucket at a time" : "";
@@ -1168,11 +1185,67 @@ async function trUpdateSel() {
     const b = [...groups.keys()][0];
     const allowed = await trPermission(b);
     const now = trByBucket();   // the selection may have changed while we asked
-    if (allowed === false && now.size === 1 && now.has(b)) {
+    if (allowed === false && !deleteRole && now.size === 1 && now.has(b)) {
       del.disabled = true;
       del.title = `this IAM user cannot delete from ${b}`;
     }
   }
+}
+
+// The earliest expiry date that costs nothing extra for the current selection,
+// shown next to the Tree's date picker. Each object is billed for its storage
+// class's minimum (Deep Archive: 180 days) from upload, so for a selection it's
+// the newest object that decides. No AWS call — it's all in the index.
+async function freeFromFor(groups, date) {
+  const parts = await Promise.all([...groups].map(([bucket, g]) =>
+    api("/api/retention/free-from", { body: { bucket, prefixes: g.prefixes, keys: g.keys, date } })));
+  const dates = parts.map(p => p.free_from).filter(Boolean).sort();
+  return {
+    free_from: dates.length ? dates[dates.length - 1] : null,
+    count: parts.reduce((n, p) => n + p.count, 0),
+    newest_upload: parts.map(p => p.newest_upload).filter(Boolean).sort().pop() || null,
+    already_free: parts.every(p => p.already_free),
+    unknown: parts.reduce((n, p) => n + p.unknown, 0),
+    min_days: Math.max(0, ...parts.map(p => p.min_days)),
+    early_at: parts.reduce((n, p) => n + p.early_at, 0),
+    max_early_days_at: Math.max(0, ...parts.map(p => p.max_early_days_at)),
+  };
+}
+
+function freeFromText(f) {
+  if (!f.count) return "";
+  if (!f.free_from) return "no minimum storage duration applies — any date is charge-free";
+  if (f.already_free) return `all past their ${f.min_days}-day minimum — any date is charge-free`;
+  return `charge-free from <b>${esc(f.free_from)}</b> <span class="muted">(newest uploaded ${esc((f.newest_upload || "").slice(0, 10))}, `
+    + `${f.min_days}-day minimum${f.unknown ? `; ${f.unknown} without an upload date not counted` : ""})</span>`;
+}
+
+let trFreeTimer = null;
+function trFreeFromSoon() {
+  clearTimeout(trFreeTimer);
+  trFreeTimer = setTimeout(async () => {
+    const el = $("#trFreeFrom"), groups = trByBucket();
+    if (!groups.size) { el.innerHTML = ""; return; }
+    try {
+      const f = await freeFromFor(groups);
+      el.innerHTML = freeFromText(f) + (f.free_from && !f.already_free
+        ? ` <a id="trUseFree" title="put this date in the expiry field">use</a>` : "");
+      const use = $("#trUseFree");
+      if (use) use.onclick = () => { $("#trExpDate").value = f.free_from; };
+    } catch (e) { el.textContent = ""; }
+  }, 300);
+}
+
+// Before scheduling a date inside the minimum: say what it would cost, offer
+// the charge-free date. Returns false if the user backs out.
+async function confirmExpiryDate(groups, date) {
+  const f = await freeFromFor(groups, date);
+  if (!f.early_at) return true;
+  return confirm(`On ${date}, ${f.early_at} of these object(s) will still be inside their `
+    + `${f.min_days}-day minimum storage duration (up to ${f.max_early_days_at} day(s) short).\n\n`
+    + `Deleting them on that date still bills the remaining days.\n`
+    + `The earliest charge-free date is ${f.free_from}.\n\n`
+    + `OK = schedule ${date} anyway · Cancel = go back and change it`);
 }
 
 // a node is covered if it or any ancestor folder is ticked (ids carry the
@@ -1355,9 +1428,12 @@ async function trExpiry(date) {
   loadTree();
 }
 
-$("#btnTrExpiry").onclick = () => {
+$("#btnTrExpiry").onclick = async () => {
   const d = $("#trExpDate").value;
   if (!d) return alert("Pick a date first");
+  if (!trPrefixes.size && !trKeys.size) return alert("Tick a folder or some files first");
+  try { if (!(await confirmExpiryDate(trByBucket(), d))) return; }
+  catch (e) { /* can't check — set it as asked */ }
   trExpiry(d);
 };
 $("#btnTrExpiryClear").onclick = () => trExpiry(null);
@@ -1410,11 +1486,14 @@ $("#btnTrDelete").onclick = async () => {
   if (!confirm(warn)) { $("#trResult").textContent = ""; return; }
   const typed = prompt("Type the bucket name to confirm:", "");
   if (typed === null) return;
+  if (typed.trim() !== bucket) { $("#trResult").textContent = "✘ the name didn't match — nothing deleted"; return; }
+  const code = askDeleteCode(`${p.count} object(s) in ${bucket}`);
+  if (code === null) { $("#trResult").textContent = "cancelled — nothing deleted"; return; }
   $("#trResult").textContent = "deleting…";
   try {
     const r = await api("/api/retention/delete", { body: {
       bucket, prefixes: g.prefixes, keys: g.keys,
-      confirm: typed.trim(), reason: "tree selection",
+      confirm: typed.trim(), reason: "tree selection", mfa_code: code,
     }});
     $("#trResult").innerHTML = `<span style="color:var(--ok)">✔ deleted ${r.deleted} object(s) · ${fmtBytes(r.bytes)}</span>`
       + (r.failed ? ` <span style="color:var(--err)">· ${r.failed} failed</span>` : "")
@@ -1434,7 +1513,11 @@ let rtBuckets = [];     // every indexed bucket, for the "all buckets" view
 
 function rtBucket() { return $("#rtBucket").value || "*"; }
 function rtTargets() { return rtBucket() === "*" ? rtBuckets : [rtBucket()]; }
-const rtCan = b => trPerm[b] === true;   // permission answers are shared with the Tree
+const rtCan = canDeleteIn;   // permission answers are shared with the Tree
+
+// The prefix box as a selection, per bucket — what freeFromFor() takes.
+const rtGroups = () => new Map(rtTargets().map(b =>
+  [b, { prefixes: [$("#rtPrefix").value.trim()], keys: [] }]));
 
 async function rtLoadBuckets() {
   const sel = $("#rtBucket"), keep = sel.value || "*";
@@ -1472,16 +1555,40 @@ $("#btnRtPreview").onclick = async () => {
         `duration — deleting them now still bills up to ${r.max_early_days} more day(s).</span>`;
       if (r.versioning === "Enabled") h += `<br><span style="color:var(--warn)">⚠ bucket versioning is ` +
         `ENABLED — deleting adds a delete marker; old versions keep costing until purged.</span>`;
+      if (r.free_from && r.free_from.free_from && !r.free_from.already_free)
+        h += `<br>Earliest charge-free expiry: <b>${esc(r.free_from.free_from)}</b>`;
       if (r.sample.length) h += `<div class="mono" style="font-size:11px;margin-top:6px">` +
         r.sample.slice(0, 15).map(s => esc(s.key)).join("<br>") +
         (r.count > 15 ? `<br>… and ${(r.count - 15).toLocaleString()} more` : "") + `</div>`;
       return `<div style="margin-bottom:6px">${h}</div>`;
     }).join("");
+    rtShowFreeFrom();
   } catch (e) { rtLast = null; $("#rtPreview").textContent = "✘ " + e.message; }
 };
 
+// Next to the expiry date: the earliest date these objects can go without an
+// early-deletion charge, with a one-click "use it".
+async function rtShowFreeFrom() {
+  const el = $("#rtFreeFrom");
+  if (!$("#rtPrefix").value.trim()) { el.innerHTML = ""; return; }
+  try {
+    const f = await freeFromFor(new Map([...rtGroups()].filter(([b]) =>
+      !rtLast || rtLast.some(r => r.bucket === b))));
+    el.innerHTML = freeFromText(f) + (f.free_from && !f.already_free
+      ? ` <a id="rtUseFree" title="put this date in the expiry field">use this date</a>` : "");
+    const use = $("#rtUseFree");
+    if (use) use.onclick = () => { $("#rtDate").value = f.free_from; };
+  } catch (e) { el.innerHTML = ""; }
+}
+
+$("#rtPrefix").onchange = () => { rtLast = null; rtShowFreeFrom(); };
+
 async function rtSetExpiry(date) {
   if (!$("#rtPrefix").value.trim()) return alert("Enter a prefix first (then Preview to check it)");
+  if (date) {
+    try { if (!(await confirmExpiryDate(rtGroups(), date))) return; }
+    catch (e) { /* can't check — set it as asked */ }
+  }
   $("#rtExpiryResult").textContent = "applying…";
   let n = 0;
   const hit = [];
@@ -1526,16 +1633,19 @@ async function rtDelete({ due }) {
     what = `${p.count} object(s) (${fmtBytes(p.bytes)}) under "${p.prefix || "(whole bucket)"}" in ${bucket}`;
     if (p.early_count) early = `\n\n${p.early_count} of them are inside the ${p.min_days}-day minimum storage duration, so you will still be billed for up to ${p.max_early_days} more day(s).`;
   }
-  if (trPerm[bucket] === false) return alert(`This IAM user cannot delete from ${bucket}.`);
+  if (!canDeleteIn(bucket) && trPerm[bucket] === false)
+    return alert(`This IAM user cannot delete from ${bucket}, and no delete role is set up.`);
   if (!confirm(`PERMANENTLY DELETE ${what} from S3?${early}\n\nThis cannot be undone.`)) return;
   const typed = prompt(`This is irreversible.\n\nType the bucket name (${bucket}) to confirm:`, "");
   if (typed === null) return;
   const el = due ? $("#rtDueResult") : $("#rtDeleteResult");
+  if (typed.trim() !== bucket) { el.textContent = "✘ the name didn't match — nothing deleted"; return; }
+  const code = askDeleteCode(what);
+  if (code === null) { el.textContent = "cancelled — nothing deleted"; return; }
   el.textContent = "deleting…";
   try {
-    const body = due
-      ? { bucket, due: true, confirm: typed.trim(), reason: $("#rtReason").value.trim() }
-      : rtBody(bucket, { confirm: typed.trim(), reason: $("#rtReason").value.trim() });
+    const extra = { confirm: typed.trim(), reason: $("#rtReason").value.trim(), mfa_code: code };
+    const body = due ? Object.assign({ bucket, due: true }, extra) : rtBody(bucket, extra);
     const r = await api("/api/retention/delete", { body });
     let msg = `✔ deleted ${r.deleted} object(s) from ${bucket} · ${fmtBytes(r.bytes)} freed`;
     if (r.early) msg += ` · ${r.early} within the minimum duration (still billed)`;
@@ -1601,22 +1711,48 @@ async function loadRetentionPermission(recheck) {
     api(`/api/retention/permission?${recheck ? "recheck=1&" : ""}bucket=` + encodeURIComponent(b))
       .catch(e => ({ bucket: b, can_delete: null, detail: e.message }))));
   res.forEach(r => trPerm[r.bucket] = r.can_delete);
+  const role = (res.find(r => "delete_role" in r) || {}).delete_role || null;
+  deleteRole = role;
   const anyCan = res.some(r => r.can_delete === true);
-  $("#btnRtDelete").disabled = !anyCan;
+  $("#btnRtDelete").disabled = !anyCan && !role;
   const stamps = res.map(r => r.checked_at).filter(Boolean).sort();
   const foot = `<div class="muted" style="margin-top:6px">
       ${stamps.length ? `Probed ${esc(stamps[stamps.length - 1])} and remembered — ColdVault does not
          re-probe on its own.` : ""}
-      <button id="btnRtRecheck" class="secondary" style="margin-left:6px">Re-check</button></div>`;
+      <button id="btnRtRecheck" class="secondary" style="margin-left:6px">Re-check</button>
+      ${role ? `<button id="btnRtRoleTest" class="secondary" style="margin-left:6px"
+                 title="unlock the role and check it may delete here — nothing is removed">Test delete role</button>` : ""}
+      </div><div id="rtRoleTest" class="muted"></div>`;
   let help = "";
-  if (anyCan) help = `<div class="muted" style="margin-top:6px">To make ColdVault strictly
-      append-only, remove <code>s3:DeleteObject</code> from the IAM policy — every other feature
-      keeps working.</div>`;
+  if (role) help = `<div class="banner ok" style="margin-top:6px">🔐 Deleting goes through the
+      <b>delete role</b> <code>${esc(role.role)}</code>, unlocked separately for each deletion${
+      role.mfa ? " with the code from your authenticator app" : " after you confirm it"} and
+      forgotten after ${Math.round(role.seconds / 60)} minutes. The everyday user above
+      ${anyCan ? "<b>can still delete on its own</b> — remove its s3:DeleteObject so only the role can"
+               : "can't delete at all"}.</div>`;
+  else if (anyCan) help = `<div class="muted" style="margin-top:6px">To make ColdVault append-only
+      day to day, remove <code>s3:DeleteObject</code> from this user and set up a delete role
+      that is unlocked only for a deletion — see <code>deploy/iam/README.md</code>.</div>`;
   else if (res.some(r => r.can_delete === false)) help = `<div class="muted" style="margin-top:6px">
-      Scheduling expiry still works (it only flags what's due). To enable deletion, grant
-      <code>s3:DeleteObject</code> on <code>arn:aws:s3:::&lt;bucket&gt;/*</code>.</div>`;
+      Scheduling expiry still works (it only flags what's due). To be able to delete, set up the
+      delete role (unlocked per deletion, ideally with MFA) — see <code>deploy/iam/README.md</code>.</div>`;
   el.innerHTML = `<div style="display:grid;gap:6px">${res.map(rtPermBanner).join("")}</div>${help}${foot}`;
   $("#btnRtRecheck").onclick = () => loadRetentionPermission(true);
+  const t = $("#btnRtRoleTest");
+  if (t) t.onclick = async () => {
+    const bucket = targets.length === 1 ? targets[0]
+      : prompt(`Test the delete role on which bucket?\n(${targets.join(", ")})`, targets[0]);
+    if (!bucket) return;
+    const code = askDeleteCode(`a test on ${bucket}`);
+    if (code === null) return;
+    $("#rtRoleTest").textContent = "unlocking the role…";
+    try {
+      const r = await api("/api/retention/role-test", { body: { bucket, mfa_code: code } });
+      $("#rtRoleTest").innerHTML = r.ok
+        ? `<span style="color:var(--ok)">✔ ${esc(bucket)}: ${esc(r.detail)} — nothing was removed</span>`
+        : `<span style="color:var(--err)">✘ ${esc(bucket)}: ${esc(r.detail)}</span>`;
+    } catch (e) { $("#rtRoleTest").innerHTML = `<span style="color:var(--err)">✘ ${esc(e.message)}</span>`; }
+  };
 }
 
 async function loadRetention(skipPerm) {

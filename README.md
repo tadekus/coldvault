@@ -638,8 +638,37 @@ The banner shows one of:
 - ⚠ **This IAM user CAN permanently delete** — deletion is live and irreversible.
 
 To make ColdVault strictly append-only, simply **don't grant `s3:DeleteObject`** — every
-other feature keeps working. Grant it (plus `s3:GetBucketVersioning` for the versioning
-warning) only when you actually want retention enforcement.
+other feature keeps working.
+
+### Deleting only when you unlock it (recommended)
+
+The better arrangement is **both**: an everyday user that can never delete, plus a
+separate **delete role** that ColdVault unlocks only for a deletion you've confirmed —
+with the 6-digit code from your authenticator app — for 15 minutes, then forgets. A
+leaked `.env` can't delete anything, and every deletion is visible in CloudTrail as an
+MFA-verified role session. [deploy/iam/](deploy/iam/README.md) writes the policies for
+your account and buckets and walks through the setup; then set in `.env`:
+
+```
+COLDVAULT_DELETE_ROLE_ARN=arn:aws:iam::123456789012:role/ColdVaultDelete
+COLDVAULT_DELETE_MFA_SERIAL=arn:aws:iam::123456789012:mfa/coldvault-master
+```
+
+The Retention tab then shows 🔒 *append-only* for the everyday user and 🔐 *deleting
+goes through the delete role*; the delete buttons work, and each deletion asks for the
+code as its last step. **Test delete role** proves the whole chain (unlock + permission)
+without removing anything.
+
+## The earliest charge-free expiry date
+
+Deep Archive bills every object for at least **180 days** from upload (Glacier 90, IA
+30) — deleting earlier still charges the remaining days. So for any selection there's
+an earliest date on which deleting costs nothing extra: the **newest** object's upload
+date plus the minimum. ColdVault shows it wherever you set an expiry — after
+**Preview** in Retention, and next to the date in the Tree (*charge-free from
+2027-05-03 · use*). If you schedule an earlier date, it says how many objects would
+still be inside their minimum on that day and by how much, and asks before setting it.
+The Expiry schedule's *Owed at expiry* column shows the same for what's scheduled.
 
 ## Integrity audit
 
@@ -803,20 +832,10 @@ COLDVAULT_AGENT_TOKEN=<the token>
 then `docker compose up -d`. Without a token, agents are refused.
 
 **2. An AWS user for the agent.** Give the agent its own IAM user that can upload and
-download but **not delete** — deleting stays possible only on the master. (Upload rights
-technically include overwriting; the key reservation above is what stops machines
-overwriting each other.)
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["s3:PutObject", "s3:GetObject", "s3:AbortMultipartUpload"],
-    "Resource": ["arn:aws:s3:::my-archive-bucket/*", "arn:aws:s3:::second-bucket/*"]
-  }]
-}
-```
+download but **not delete** — deleting stays possible only on the master.
+[deploy/iam/](deploy/iam/README.md) writes its policy (`agent-user.json`) along with
+the master's and walks through creating it. (Upload rights technically include
+overwriting; the key reservation above is what stops machines overwriting each other.)
 
 **3. On the agent** — a 64-bit OS (the AWS CLI has no 32-bit ARM build; on a Pi use
 Raspberry Pi OS 64-bit), Docker with the compose plugin, and the repository:

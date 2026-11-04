@@ -566,8 +566,43 @@ def api_retention_permission():
     bucket = request.args.get("bucket") or config.BUCKET
     recheck = request.args.get("recheck") in ("1", "true", "yes")
     allowed, detail, checked_at = retention.can_delete(bucket, recheck=recheck)
+    # can_delete is about the everyday user. With a delete role configured,
+    # deleting is still possible — but only by unlocking the role each time.
     return jsonify({"bucket": bucket, "can_delete": allowed, "detail": detail,
-                    "checked_at": checked_at, "probe_enabled": config.DELETE_PROBE})
+                    "checked_at": checked_at, "probe_enabled": config.DELETE_PROBE,
+                    "delete_role": retention.delete_identity() if config.DELETE_ROLE_ARN
+                    else None})
+
+
+@app.post("/api/retention/role-test")
+def api_retention_role_test():
+    """Unlock the delete role (with the MFA code) and check it may delete from
+    the bucket — using the same harmless probe, nothing is removed."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    try:
+        return jsonify(retention.test_role(bucket, data.get("mfa_code")))
+    except retention.DeleteAuthError as e:
+        return jsonify({"error": str(e)}), 403
+
+
+@app.post("/api/retention/free-from")
+def api_retention_free_from():
+    """The earliest charge-free expiry date for a selection (no AWS call), and —
+    given a proposed `date` — how many objects would still be inside their
+    minimum storage duration on it."""
+    data = request.get_json(force=True)
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
+    rows, err = _retention_rows(data, bucket)
+    if err:
+        return jsonify({"error": err}), 400
+    as_of = None
+    if data.get("date"):
+        try:
+            as_of = datetime.strptime(data["date"], "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+    return jsonify({"bucket": bucket, "count": len(rows), **retention.free_from(rows, as_of)})
 
 
 def _retention_rows(data, bucket):
@@ -640,7 +675,7 @@ def api_retention_due():
         "items": [{"bucket": r["bucket"], "key": r["key"], "size": r["size"],
                    "expires_at": r["expires_at"],
                    "uploaded_at": r["uploaded_at"],
-                   "early_days": retention.early_days(r),
+                   "early_days": retention.early_days_at_expiry(r),
                    "days_left": retention.days_left(r),
                    "due": (r["expires_at"] or "") <= now}
                   for r in rows[:500]],
@@ -667,9 +702,16 @@ def api_retention_delete():
     if not rows:
         return jsonify({"error": "nothing matched — refusing to delete"}), 400
     try:
-        rep = retention.delete(bucket, rows, (data.get("reason") or "").strip(), mode)
+        # With a delete role configured, this is the only moment it is unlocked.
+        creds = retention.unlock(data.get("mfa_code"))
+    except retention.DeleteAuthError as e:
+        return jsonify({"error": str(e), "auth": True}), 403
+    try:
+        rep = retention.delete(bucket, rows, (data.get("reason") or "").strip(), mode, creds)
     except AwsError as e:
         return jsonify({"error": str(e)[:500]}), 502
+    finally:
+        creds = None
     return jsonify(rep)
 
 

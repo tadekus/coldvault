@@ -10,7 +10,9 @@ explicit and auditable:
     index entry, plus an ERROR-free but explicit log line under 'retention'.
 """
 import json
+import math
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -18,6 +20,7 @@ from uuid import uuid4
 import awsapi
 import config
 import db
+from awsapi import AwsError
 from logs import log_event
 
 # AWS minimum billable storage duration per storage class (days).
@@ -51,6 +54,52 @@ def early_days(row, as_of=None):
     free_on = up + timedelta(days=mind)
     rem = (free_on - (as_of or datetime.now())).days
     return max(0, rem)
+
+
+def early_days_at_expiry(row):
+    """Days still owed under the minimum if the object is deleted on its planned
+    expiry date — or now, once that date has passed."""
+    now = datetime.now()
+    return early_days(row, as_of=max(_parse(row.get("expires_at")) or now, now))
+
+
+def free_from(rows, as_of=None):
+    """When deleting these objects stops costing extra. Each object is free of
+    the minimum-duration charge once its storage class's minimum (Deep Archive:
+    180 days) has passed since upload; for a set, that's the LATEST of those.
+
+    With `as_of` (a datetime — a proposed expiry date), also says how many
+    would still be inside their minimum on that day, and by how much.
+
+    Returns {"free_from": "YYYY-MM-DD" | None (nothing with a minimum),
+    "newest_upload", "min_days", "unknown" (no upload date), "already_free",
+    "early_at", "max_early_days_at"}."""
+    ends, unknown, mins = [], 0, set()
+    for r in rows:
+        mind = min_days_for(r.get("storage_class"))
+        if not mind:
+            continue
+        up = _parse(r.get("uploaded_at"))
+        if not up:
+            unknown += 1
+            continue
+        mins.add(mind)
+        ends.append((up + timedelta(days=mind), up))
+    out = {"free_from": None, "newest_upload": None, "unknown": unknown,
+           "min_days": max(mins) if mins else min_days_for(config.STORAGE_CLASS),
+           "already_free": True, "early_at": 0, "max_early_days_at": 0}
+    if ends:
+        end, newest = max(ends)
+        # An expiry date means that day at 00:00, so a minimum that ends during
+        # a day is only fully served from the next one.
+        day = end.date() if end.time() == datetime.min.time() else (end + timedelta(days=1)).date()
+        out.update(free_from=day.isoformat(), newest_upload=newest.strftime(db.TIME_FMT),
+                   already_free=end <= datetime.now())
+    if as_of:
+        short = [(e - as_of).total_seconds() / 86400 for e, _ in ends if e > as_of]
+        out.update(early_at=len(short),
+                   max_early_days_at=math.ceil(max(short)) if short else 0)
+    return out
 
 
 def days_left(row, as_of=None):
@@ -115,6 +164,81 @@ def can_delete(bucket, recheck=False):
     return allowed, detail, checked_at
 
 
+class DeleteAuthError(Exception):
+    """The delete role couldn't be unlocked — wrong or missing code, trust
+    policy, … The message is for the user."""
+
+
+def delete_identity():
+    """How deletions are authorised here: through the delete role (with or
+    without MFA), or with the everyday user."""
+    return {"role": config.DELETE_ROLE_ARN or None,
+            "mfa": bool(config.DELETE_ROLE_ARN and config.DELETE_MFA_SERIAL),
+            "seconds": config.DELETE_SESSION_SECONDS}
+
+
+def unlock(mfa_code=None, purpose="delete"):
+    """Temporary credentials for the delete role, for one deletion. None when no
+    role is configured (deletes then run as the everyday user, if it may).
+
+    The role exists so the everyday user can't delete at all: AWS lets it only
+    *assume* the role — and with an MFA-required trust policy, only with a
+    fresh code from your authenticator. The credentials live in memory for this
+    one request and expire on their own after a few minutes."""
+    if not config.DELETE_ROLE_ARN:
+        return None
+    args = ["sts", "assume-role", "--role-arn", config.DELETE_ROLE_ARN,
+            "--role-session-name", f"coldvault-{purpose}-{config.NAME}"[:64],
+            "--duration-seconds", str(config.DELETE_SESSION_SECONDS)]
+    if config.DELETE_MFA_SERIAL:
+        code = (mfa_code or "").strip()
+        if not re.fullmatch(r"\d{6}", code):
+            raise DeleteAuthError("enter the 6-digit code from your authenticator app")
+        args += ["--serial-number", config.DELETE_MFA_SERIAL, "--token-code", code]
+    try:
+        # log=False: the command line carries the one-time code.
+        r = awsapi.aws(*args, log=False, log_errors=False)
+    except AwsError as e:
+        msg = str(e)
+        hint = (" — wrong or already-used code?" if config.DELETE_MFA_SERIAL and
+                ("AccessDenied" in msg or "MultiFactor" in msg) else "")
+        log_event("WARNING", "retention", f"delete role NOT unlocked ({purpose}): "
+                                          f"{msg.strip().splitlines()[-1][:200]}")
+        raise DeleteAuthError(f"couldn't unlock the delete role{hint} "
+                              f"({msg.strip().splitlines()[-1][:200]})")
+    c = (r or {}).get("Credentials") or {}
+    if not c.get("AccessKeyId"):
+        raise DeleteAuthError("the delete role returned no credentials")
+    log_event("WARNING", "retention",
+              f"delete role unlocked for {purpose}"
+              + (" (MFA verified)" if config.DELETE_MFA_SERIAL else "")
+              + f" — temporary credentials expire {db.to_local(c.get('Expiration'))}")
+    return {"AWS_ACCESS_KEY_ID": c["AccessKeyId"], "AWS_SECRET_ACCESS_KEY": c["SecretAccessKey"],
+            "AWS_SESSION_TOKEN": c["SessionToken"]}
+
+
+def test_role(bucket, mfa_code=None):
+    """Prove the delete setup end to end: unlock the role, then run the same
+    harmless probe as can_delete() with its credentials (a delete of a random
+    key that never existed — nothing is removed)."""
+    creds = unlock(mfa_code, purpose="test")
+    if creds is None:
+        raise DeleteAuthError("no delete role configured (COLDVAULT_DELETE_ROLE_ARN)")
+    try:
+        awsapi.s3api("delete-object", "--bucket", bucket,
+                     "--key", f".coldvault-permission-probe/{uuid4().hex}",
+                     log=False, log_errors=False, creds=creds)
+        ok, detail = True, "the role can delete from this bucket"
+    except AwsError as e:
+        msg = str(e)
+        ok = False
+        detail = ("the role was unlocked but has no s3:DeleteObject on this bucket"
+                  if "AccessDenied" in msg else msg.strip().splitlines()[-1][:200])
+    log_event("INFO", "retention", f"delete role test on s3://{bucket}: "
+                                   f"{'OK' if ok else 'FAILED'} — {detail}")
+    return {"ok": ok, "detail": detail}
+
+
 def bucket_versioning(bucket):
     """'Enabled' / 'Suspended' / None. On a versioned bucket a delete only adds a
     delete marker — the data (and its cost) stays until the version is purged."""
@@ -140,6 +264,7 @@ def preview_rows(bucket, rows, prefix=None):
         "bucket": bucket, "prefix": prefix, "count": len(rows), "bytes": total,
         "early_count": len(early), "early_bytes": early_bytes, "max_early_days": worst,
         "min_days": min_days_for(config.STORAGE_CLASS),
+        "free_from": free_from(rows),
         "versioning": bucket_versioning(bucket),
         "sample": [{"key": r["key"], "size": r["size"], "uploaded_at": r["uploaded_at"],
                     "expires_at": r["expires_at"], "early_days": early_days(r)}
@@ -147,7 +272,7 @@ def preview_rows(bucket, rows, prefix=None):
     }
 
 
-def _delete_batch(bucket, keys):
+def _delete_batch(bucket, keys, creds=None):
     """Delete up to BATCH keys. Returns (deleted_keys, {key: error})."""
     payload = {"Objects": [{"Key": k} for k in keys], "Quiet": False}
     fd, path = tempfile.mkstemp(dir=config.TMP_DIR, suffix=".del.json")
@@ -155,7 +280,7 @@ def _delete_batch(bucket, keys):
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f)
         resp = awsapi.s3api("delete-objects", "--bucket", bucket,
-                            "--delete", f"file://{path}")
+                            "--delete", f"file://{path}", creds=creds)
     finally:
         try:
             os.unlink(path)
@@ -167,21 +292,23 @@ def _delete_batch(bucket, keys):
     return done, errs
 
 
-def delete(bucket, rows, reason, mode):
+def delete(bucket, rows, reason, mode, creds=None):
     """Permanently delete the given index rows from S3 and the index, writing a
-    tombstone for each. Returns a report. Never called automatically."""
+    tombstone for each. Returns a report. Never called automatically.
+    `creds` are the delete role's (see unlock()); None = the everyday user."""
     report = {"requested": len(rows), "deleted": 0, "bytes": 0, "failed": 0,
               "early": 0, "errors": [], "versioning": bucket_versioning(bucket)}
     by_key = {r["key"]: r for r in rows}
     keys = list(by_key)
     log_event("WARNING", "retention",
               f"DELETE starting: {len(keys)} object(s) from s3://{bucket} "
-              f"(mode={mode}, reason={reason or 'n/a'})")
+              f"(mode={mode}, reason={reason or 'n/a'}"
+              + (", as the delete role" if creds else "") + ")")
 
     for i in range(0, len(keys), BATCH):
         chunk = keys[i:i + BATCH]
         try:
-            done, errs = _delete_batch(bucket, chunk)
+            done, errs = _delete_batch(bucket, chunk, creds)
         except Exception as e:
             report["failed"] += len(chunk)
             report["errors"].append(str(e)[:300])

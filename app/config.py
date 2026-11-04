@@ -100,6 +100,16 @@ EJECT_AFTER_UPLOAD = env_bool("COLDVAULT_EJECT_AFTER_UPLOAD", False)
 # key — it removes nothing), so the Retention tab can say so. Probed once and
 # cached; re-run only from the Re-check button. Set false to never call delete.
 DELETE_PROBE = env_bool("COLDVAULT_DELETE_PROBE", True)
+# Deleting through a separate AWS role. The everyday IAM user (above, in the AWS_*
+# keys) can't delete at all; for each deletion ColdVault assumes this role for
+# a few minutes — after you've confirmed it, and with your authenticator code
+# when an MFA device is given — and forgets the credentials afterwards.
+# See deploy/iam/README.md. Empty = delete with the everyday user, if it can.
+DELETE_ROLE_ARN = env("COLDVAULT_DELETE_ROLE_ARN")
+# The everyday user's MFA device (arn:aws:iam::<account>:mfa/<name>). Set it, and
+# the role's trust policy can require MFA: no code, no deletion.
+DELETE_MFA_SERIAL = env("COLDVAULT_DELETE_MFA_SERIAL")
+DELETE_SESSION_SECONDS = 900   # how long unlocked delete credentials live
 MANIFEST_CHECK = env_bool("COLDVAULT_MANIFEST_CHECK", True)
 MANIFEST_EXTS = tuple(("." + e.lstrip(".").lower())
                       for e in _csv("COLDVAULT_MANIFEST_EXTS", ".csv,.mhl"))

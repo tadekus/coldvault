@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -10,17 +11,26 @@ class AwsError(Exception):
     pass
 
 
-def aws(*args, log=True, log_errors=True, timeout=None):
+def aws(*args, log=True, log_errors=True, timeout=None, creds=None):
     """Run an aws CLI command, log it, return parsed JSON output (or {}).
 
     `log_errors=False` is for calls whose failure is an expected answer rather
     than a fault (the delete-permission probe): the caller logs the conclusion,
-    so an ERROR row here would just cry wolf."""
+    so an ERROR row here would just cry wolf.
+
+    `creds` = {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN} runs
+    this one command as someone else (the delete role) instead of the everyday
+    user. They go in the child's environment only — never on the command line,
+    so never in a log."""
     cmd = ["aws", *args, "--output", "json"]
     pretty = " ".join(shlex.quote(c) for c in cmd)
+    env = None
+    if creds:
+        env = {k: v for k, v in os.environ.items() if k != "AWS_PROFILE"}
+        env.update(creds)
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except FileNotFoundError:
         raise AwsError("aws CLI not found — is it installed in the container?")
     except subprocess.TimeoutExpired:

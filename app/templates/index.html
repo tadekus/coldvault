@@ -340,6 +340,8 @@
   <div class="row toolbar restorebar">
     <span class="muted">Expiry</span>
     <input id="trExpDate" type="date" style="width:160px">
+    <span id="trFreeFrom" style="font-size:12px" title="Deep Archive bills every object for at
+least 180 days from upload (Glacier 90) — deleting earlier still charges the rest"></span>
     <button id="btnTrExpiry" class="secondary">Set expiry</button>
     <button id="btnTrExpiryClear" class="secondary">Clear expiry</button>
     <span class="muted" style="font-size:12px">schedules only — nothing is deleted automatically</span>
@@ -393,6 +395,8 @@
         <button id="btnRtSetExpiry" class="secondary">Set expiry</button>
         <button id="btnRtClearExpiry" class="secondary">Clear expiry</button>
       </div>
+      <div id="rtFreeFrom" style="font-size:12px" title="Deep Archive bills every object for at
+least 180 days from upload (Glacier 90) — deleting earlier still charges the rest"></div>
       <div id="rtExpiryResult" class="muted"></div>
     </div>
 
@@ -425,7 +429,7 @@
     <div class="tablewrap">
       <table id="rtDueTable">
         <thead><tr><th>Bucket</th><th>Key</th><th>Size</th><th>Uploaded</th><th>Expires</th>
-          <th>In</th><th>Early-delete</th><th></th></tr></thead>
+          <th>In</th><th title="days still billed under the minimum storage duration if deleted on its expiry date">Owed at expiry</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
