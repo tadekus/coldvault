@@ -4,6 +4,16 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.19.2
+
+- Removed personal details from files published to GitHub. Example values
+  now use placeholders in place of the real master computer name, user name and
+  paths, LAN IP, bucket names and drive name: `master-host`, `<master-LAN-IP>`,
+  `/home/me`, `my-archive-bucket`, `SSD01`. Affected files: `.env.example`,
+  `.env.agent.example`, the compose override example, README, and UI hints.
+  `COLDVAULT_BROWSE_ROOTS` in `.env.example` is now empty by default. Your own
+  `.env` is unaffected; it was never committed.
+
 ## 1.19.1
 
 - README: **AWS users and permissions**, a full guide to the identities ColdVault
