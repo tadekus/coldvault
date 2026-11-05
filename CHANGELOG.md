@@ -4,6 +4,15 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.19.3
+
+- `.env.agent.example`: `COLDVAULT_MULTIPART_THRESHOLD_MB` is now **4096** (was 512).
+  Files up to 4 GB upload straight from the drive, so an agent writes nothing to its
+  own disk for them. This makes running a Raspberry Pi from its SD card practical.
+  Existing agents keep their own `.env` value; change it there to get the same.
+  The master's default is unchanged.
+- README "On a Raspberry Pi" updated to match.
+
 ## 1.19.2
 
 - Removed personal details from files published to GitHub. Example values

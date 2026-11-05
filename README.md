@@ -1040,9 +1040,14 @@ message saying so, and the Dashboard marks a version mismatch.
 
 ### On a Raspberry Pi
 
-- Keep the ColdVault folder (its `data/`) on a **USB SSD, not the SD card**: large files
-  are staged in pieces of `COLDVAULT_PART_SIZE_MB` while they upload, which would wear out
-  an SD card. `.env.agent.example` already uses smaller parts and fewer workers.
+- **SD card or SSD:** `.env.agent.example` uploads files up to 4 GB
+  (`COLDVAULT_MULTIPART_THRESHOLD_MB=4096`) straight from the drive, so nothing is written
+  to the Pi's own disk for them; only bigger files are staged there in
+  `COLDVAULT_PART_SIZE_MB` pieces (about 512 MB at a time). Running from the SD card works,
+  but if you often archive files over 4 GB, a USB SSD or a "high endurance" card lasts
+  longer. A worn-out card loses no records — the agent keeps none. Downloads land in
+  `./downloads`, so point that at a bigger disk in `docker-compose.agent.yml` if the card
+  is small.
 - A Pi 4 has no hardware SHA-256, so checksumming is slower than on a desktop; a Pi 5
   does. On most home connections the upload speed is the limit anyway.
 
