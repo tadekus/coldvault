@@ -601,8 +601,15 @@ Already-verified and duplicate content is skipped as usual.
 | `Hotel Example` | `Disk01` | `RAID01` | `Hotel Example/Disk01/…` |
 
 The **prefix** (e.g. the film) goes in front; the **label** replaces the folder's own
-name. The line under the fields shows where the keys will start, the prefix is
-remembered in the browser, and `COLDVAULT_PREFIX` (if set) still comes first.
+name, and `COLDVAULT_PREFIX` (if set) still comes first. The prefix box suggests the
+prefixes used before in the chosen bucket (newest first) and the folders already at the
+top of that bucket — or type a new one. The line under the fields shows where the keys
+will start and what the prefix means: **new prefix**, **adds to the existing "…"** (with
+what's there now), or a warning when it differs from an existing folder only in
+upper/lower case (S3 would make it a second folder). With **no prefix** the line warns
+that the files go to the top of the bucket under a folder's name, and so does the
+confirmation. The box starts empty each time, so one film can't quietly inherit the
+previous film's prefix.
 **Start upload** counts the selection on the machine that has it and confirms with the
 real numbers — *1 ticked folder · 48,211 files · 50.2 TB → s3://bucket/Hotel
 Example/RAID01/…* — or with a current preview's totals.

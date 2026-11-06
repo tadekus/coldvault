@@ -67,14 +67,15 @@ def _after_agent_upload(sid):
 up.on_session_done = _after_upload
 
 
-def _start_session(location, source, label, trigger, items=None, bucket=None):
+def _start_session(location, source, label, trigger, items=None, bucket=None, prefix=None):
     """Queue an upload here, or on agent `location` (which picks it up at its
     next check-in — woken right away)."""
     if not location:
-        return up.enqueue(source, label, trigger, items=items, bucket=bucket)
+        return up.enqueue(source, label, trigger, items=items, bucket=bucket, prefix=prefix)
     bucket = bucket or config.BUCKET
     label = label or os.path.basename(source.rstrip("/")) or "upload"
-    sid = db.create_session(bucket, source, label, trigger, location=location, items=items)
+    sid = db.create_session(bucket, source, label, trigger, location=location, items=items,
+                            prefix=prefix)
     what = f"{len(items)} selected item(s) under {source}" if items else source
     log_event("INFO", "upload", f"Session #{sid} queued on {location}: {what} -> "
                                 f"s3://{bucket} (label='{label}', trigger={trigger})")
@@ -355,17 +356,34 @@ def api_browse():
                        path=request.args.get("path") or None))
 
 
+def _key_parts(v):
+    p = [x.strip() for x in str(v or "").replace("\\", "/").split("/")]
+    if any(x in (".", "..") for x in p):
+        raise ValueError("a prefix or label can't contain '.' or '..' as a folder name")
+    return [x for x in p if x]
+
+
+def _manual_prefix(data):
+    """The typed prefix, tidied: "Film / RAW/" -> "Film/RAW". Raises ValueError."""
+    return "/".join(_key_parts(data.get("prefix")))
+
+
 def _manual_label(data, source):
     """Where a manual upload's keys start (after COLDVAULT_PREFIX): the optional
     prefix — e.g. the film — then the label, which is the folder's own name
     unless one is typed. "Film/Day01" and "Film" + "Day01" are the same."""
-    def parts(v):
-        p = [x.strip() for x in str(v or "").replace("\\", "/").split("/")]
-        if any(x in (".", "..") for x in p):
-            raise ValueError("a prefix or label can't contain '.' or '..' as a folder name")
-        return [x for x in p if x]
-    label = parts(data.get("label")) or [os.path.basename(source.rstrip("/")) or "upload"]
-    return "/".join(parts(data.get("prefix")) + label)
+    label = _key_parts(data.get("label")) or [os.path.basename(source.rstrip("/")) or "upload"]
+    return "/".join(_key_parts(data.get("prefix")) + label)
+
+
+@app.get("/api/upload/prefixes")
+def api_upload_prefixes():
+    """Suggestions for the manual-upload prefix in one bucket: prefixes typed
+    before, and the folders already at the top of the bucket."""
+    bucket = (request.args.get("bucket") or "").strip() or config.BUCKET
+    return jsonify({"bucket": bucket, "global_prefix": config.PREFIX or "",
+                    "prefixes": db.used_prefixes(bucket),
+                    "folders": db.top_folders(bucket, (config.PREFIX or "").strip("/"))})
 
 
 def _upload_bucket(data):
@@ -432,10 +450,11 @@ def api_upload():
     plan = _fs(location, "prepare_upload", path=data.get("path"), items=data.get("items"))
     try:
         label = _manual_label(data, plan["source"])
+        prefix = _manual_prefix(data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     sid = _start_session(location, plan["source"], label, "manual",
-                         items=plan["items"], bucket=bucket)
+                         items=plan["items"], bucket=bucket, prefix=prefix)
     return jsonify({"session_id": sid, "bucket": bucket, "location": location or config.NAME})
 
 

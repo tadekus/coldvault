@@ -4,6 +4,23 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.22.0
+
+- **Prefix suggestions.** The manual-upload prefix box lists:
+  - prefixes used before in the chosen bucket, newest first, with how often and when;
+  - the folders already at the top of that bucket, with file count and size.
+
+  You can still type a new one. Sessions now record the prefix they were started
+  with; the database adds the column on its own.
+- The line under the fields explains the prefix:
+  - **new prefix**;
+  - **adds to the existing "…"**, with what's there now;
+  - a warning when it differs from an existing folder only in upper/lower case.
+- **Warning without a prefix.** Shown under the fields, with which folder name the keys
+  would start with, and again at the top of the confirmation.
+- The prefix box no longer remembers the last value; recent prefixes are in its list.
+  This way one film can't quietly inherit the previous one's prefix.
+
 ## 1.21.0
 
 - **Stop an upload:** a **Stop** button in Sessions, for this machine and for agents.

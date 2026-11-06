@@ -247,6 +247,7 @@ def _ensure_columns():
     leaves an existing table alone)."""
     for table, col, decl in (("sessions", "location", "TEXT DEFAULT ''"),
                              ("sessions", "items", "TEXT"),
+                             ("sessions", "prefix", "TEXT"),
                              ("dl_sessions", "location", "TEXT DEFAULT ''"),
                              ("dl_sessions", "items", "TEXT")):
         cols = [r[1] for r in _conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -342,12 +343,35 @@ def list_events(level=None, category=None, q=None, limit=200):
 
 # ---- sessions ----
 
-def create_session(bucket, source, label, trigger, location="", items=None):
+def create_session(bucket, source, label, trigger, location="", items=None, prefix=None):
+    """`label` is where the keys start (after COLDVAULT_PREFIX); `prefix` is the
+    part of it typed as a manual upload's prefix, kept to suggest it again."""
     cur = _exec("INSERT INTO sessions(bucket, source, label, trigger, status, started_at, "
-                "location, items) VALUES(?,?,?,?,?,?,?,?)",
+                "location, items, prefix) VALUES(?,?,?,?,?,?,?,?,?)",
                 (bucket, source, label, trigger, "queued", now(), location or "",
-                 json.dumps(items) if items is not None else None))
+                 json.dumps(items) if items is not None else None, prefix or None))
     return cur.lastrowid
+
+
+def used_prefixes(bucket):
+    """Prefixes typed for manual uploads to this bucket, most recent first."""
+    return _rows("""SELECT prefix, COUNT(*) AS sessions, MAX(started_at) AS last_used
+                    FROM sessions WHERE bucket=? AND prefix IS NOT NULL AND prefix != ''
+                    GROUP BY prefix ORDER BY MAX(id) DESC""", (bucket,))
+
+
+def top_folders(bucket, under=""):
+    """The first folder level of the bucket's indexed objects (below `under`,
+    the global COLDVAULT_PREFIX), with file counts and bytes."""
+    start = len(under) + 2 if under else 1
+    like = f"{_esc_like(under)}/%" if under else "%"
+    return _rows("""SELECT substr(k, 1, instr(k, '/') - 1) AS name, COUNT(*) AS files,
+                           COALESCE(SUM(size), 0) AS bytes
+                    FROM (SELECT substr(key, ?) AS k, size FROM files
+                          WHERE bucket=? AND key LIKE ? ESCAPE '\\'
+                                AND status IN ('verified', 'remote', 'uploading'))
+                    WHERE instr(k, '/') > 1 GROUP BY name ORDER BY name""",
+                 (start, bucket, like))
 
 
 def update_session(sid, **kw):

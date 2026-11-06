@@ -143,7 +143,7 @@ class Uploader:
         self.on_session_done = None
         threading.Thread(target=self._loop, daemon=True, name="uploader").start()
 
-    def enqueue(self, source, label, trigger, items=None, bucket=None):
+    def enqueue(self, source, label, trigger, items=None, bucket=None, prefix=None):
         """Master: queue an upload of the folder `source`, or of just `items`
         under it (as localfs.prepare_upload returns them). `bucket` pins this
         session's destination (a canary's own bucket, or the one picked for a
@@ -152,7 +152,7 @@ class Uploader:
         if not label:
             label = os.path.basename(source.rstrip("/")) or "upload"
         bucket = bucket or config.BUCKET
-        sid = db.create_session(bucket, source, label, trigger, items=items)
+        sid = db.create_session(bucket, source, label, trigger, items=items, prefix=prefix)
         what = f"{len(items)} selected item(s) under {source}" if items else source
         log_event("INFO", "upload",
                   f"Session #{sid} queued: {what} -> s3://{bucket} "

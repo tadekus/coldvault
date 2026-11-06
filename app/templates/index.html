@@ -89,8 +89,10 @@
       <button id="btnBrowse" class="secondary">Open</button>
     </div>
     <div class="row">
-      <input id="uploadPrefix" placeholder="prefix (optional) — e.g. the film: Hotel Example"
+      <input id="uploadPrefix" list="prefixList" autocomplete="off"
+             placeholder="prefix — pick one used before, or type a new one (e.g. the film)"
              title="put in front of every key of this upload; may contain / for more levels" style="flex:1">
+      <datalist id="prefixList"></datalist>
       <input id="uploadLabel" placeholder="label (optional, default = folder name)"
              title="replaces the uploaded folder's own name in the keys" style="flex:1">
     </div>

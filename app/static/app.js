@@ -620,11 +620,9 @@ $("#btnBrowse").onclick = () => treeOpenAt($("#uploadPath").value);
 $("#uploadPath").addEventListener("keydown", e => { if (e.key === "Enter") treeOpenAt(e.target.value); });
 $("#uploadPath").addEventListener("input", updateUploadSel);
 $("#uploadLabel").addEventListener("input", upPreviewStale);
-$("#uploadPrefix").addEventListener("input", () => {
-  try { localStorage.setItem("cv.uploadPrefix", $("#uploadPrefix").value); } catch (e) { /* private mode */ }
-  upPreviewStale();
-});
-try { $("#uploadPrefix").value = localStorage.getItem("cv.uploadPrefix") || ""; } catch (e) { /* ignore */ }
+// Not pre-filled from last time on purpose: the next film mustn't quietly land
+// under the previous one's prefix. Recent prefixes are offered in its list.
+$("#uploadPrefix").addEventListener("input", upPreviewStale);
 
 $("#btnClearSel").onclick = () => { uploadSel.clear(); syncChecks(); };
 
@@ -660,9 +658,30 @@ async function loadUploadBuckets(select) {
       `<option value="${esc(b)}">s3://${esc(b)}${b === r.active ? " (active)" : ""}</option>`)
       .join("") + `<option value="${OTHER_BUCKET}">other bucket…</option>`;
     sel.value = names.includes(keep) ? keep : (r.active || names[0] || "");
+    loadPrefixes();
   } catch (e) {
     sel.innerHTML = `<option value="">✘ ${esc(e.message)}</option>`;
   }
+}
+
+// Prefix suggestions for the chosen bucket: prefixes typed before (newest
+// first), then the folders already at the top of the bucket.
+let prefixInfo = { bucket: null, prefixes: [], folders: [] };
+
+async function loadPrefixes() {
+  const bucket = $("#uploadBucket").value;
+  if (!bucket || bucket === OTHER_BUCKET || bucket === prefixInfo.bucket) return;
+  try {
+    prefixInfo = await api("/api/upload/prefixes?bucket=" + encodeURIComponent(bucket));
+  } catch (e) {
+    prefixInfo = { bucket, prefixes: [], folders: [] };
+  }
+  const used = new Set(prefixInfo.prefixes.map(p => p.prefix));
+  $("#prefixList").innerHTML =
+    prefixInfo.prefixes.map(p => `<option value="${esc(p.prefix)}" label="used ${p.sessions}× · last ${esc((p.last_used || "").slice(0, 10))}"></option>`).join("")
+    + prefixInfo.folders.filter(f => !used.has(f.name)).map(f =>
+        `<option value="${esc(f.name)}" label="folder in ${esc(bucket)} · ${f.files.toLocaleString()} files · ${fmtBytes(f.bytes)}"></option>`).join("");
+  upShowKeys();
 }
 
 // "other bucket…" types a name that isn't in the index yet; the server still
@@ -672,6 +691,7 @@ function pickUploadBucket(name) {
   if (![...sel.options].some(o => o.value === name))
     sel.insertBefore(new Option(`s3://${name}`, name), sel.firstChild);
   sel.value = name;
+  loadPrefixes();
   upPreviewStale();
 }
 $("#uploadBucket").onchange = () => {
@@ -681,6 +701,7 @@ $("#uploadBucket").onchange = () => {
     if (name) pickUploadBucket(name);
     else loadUploadBuckets();
   }
+  loadPrefixes();
   upPreviewStale();
 };
 
@@ -717,11 +738,37 @@ function upKeyStart(body) {
   return [globalPrefix, ...clean(body.prefix), ...label].filter(Boolean).join("/") + "/";
 }
 
+// Where the keys will start, and what the prefix means: new, or adding to
+// something already in the bucket. Without a prefix, a warning — the files
+// would land at the top of the bucket under a folder's name.
 function upShowKeys() {
+  const el = $("#uploadKeys");
   let body = null;
   try { body = upRequest(); } catch (e) { /* incomplete */ }
-  $("#uploadKeys").textContent = body
-    ? `keys will start with  s3://${body.bucket}/${upKeyStart(body)}…` : "";
+  if (!body) { el.innerHTML = ""; return; }
+  const keys = `s3://${esc(body.bucket)}/${esc(upKeyStart(body))}…`;
+  const prefix = body.prefix.split("/").map(x => x.trim()).filter(Boolean).join("/");
+  if (!prefix) {
+    const name = upKeyStart(body).replace(/\/$/, "").split("/").pop();
+    const why = body.label.trim() ? "your label"
+      : body.path ? "the folder's own name"
+      : body.items.length === 1 && uploadSel.get(body.items[0]).type === "dir" ? "the ticked folder's own name"
+      : "the name of the folder that holds what you ticked";
+    el.innerHTML = `<span style="color:var(--warn)">⚠ No prefix — keys start at the top of the bucket:
+      ${keys} ("${esc(name)}" is ${why}). Set a prefix, e.g. the film's name.</span>`;
+    return;
+  }
+  const top = prefix.split("/")[0];
+  const used = prefixInfo.prefixes.find(p => p.prefix === prefix);
+  const folder = prefixInfo.folders.find(f => f.name === top);
+  const nearly = !folder && prefixInfo.folders.find(f => f.name.toLowerCase() === top.toLowerCase());
+  let note;
+  if (nearly) note = `<span style="color:var(--warn)">⚠ "${esc(top)}" differs only in upper/lower case
+      from the existing "${esc(nearly.name)}" — S3 treats them as two different folders</span>`;
+  else if (folder) note = `adds to the existing "${esc(top)}" (${folder.files.toLocaleString()} files · ${fmtBytes(folder.bytes)} there now)`;
+  else if (used) note = `used before (${used.sessions}×)`;
+  else note = `<span style="color:var(--ok)">new prefix</span>`;
+  el.innerHTML = `keys will start with ${keys} · ${note}`;
 }
 
 function upPreviewStale() {
@@ -825,7 +872,9 @@ $("#btnUpload").onclick = async () => {
   }
   const keys = body._keys || `s3://${body.bucket}/${upKeyStart(body)}`;
   delete body._keys;
-  if (!confirm(`Upload ${what}?\n\nFrom: ${machine(body.location)}\n${totals}\n\n`
+  const noPrefix = !body.prefix.replace(/[\s/]/g, "")
+    ? `⚠ NO PREFIX — these files go to the top level of the bucket.\n\n` : "";
+  if (!confirm(`${noPrefix}Upload ${what}?\n\nFrom: ${machine(body.location)}\n${totals}\n\n`
              + `Destination: ${keys}…`)) return;
   try {
     const r = await api("/api/upload", { body });
