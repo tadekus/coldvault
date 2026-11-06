@@ -110,6 +110,24 @@ def _hash_file(path, extra_algo=None):
             extra.hexdigest() if extra is not None else None)
 
 
+def _manifest_state(mentry, computed, m_entries, rel):
+    """(state, algo, expected) of the offload-manifest check for one file, from
+    the manifest hash computed while reading it (None if unsupported)."""
+    if mentry:
+        algo, expected, _ = mentry
+        if computed is None:
+            log_event("WARNING", "manifest",
+                      f"manifest hash '{algo}' not supported (install xxhash?): {rel}")
+            return "algo_unsupported", algo, expected
+        if manifest.normalize_hash(algo, computed) == expected:
+            return "ok", algo, expected
+        log_event("ERROR", "manifest",
+                  f"MANIFEST MISMATCH: {rel} — {algo} manifest={expected} "
+                  f"computed={manifest.normalize_hash(algo, computed)}")
+        return "mismatch", algo, expected
+    return ("not_in_manifest" if m_entries else None), None, None
+
+
 class Uploader:
     """Serial session queue; files within a session upload in parallel workers.
 
@@ -333,27 +351,25 @@ class Uploader:
                 log_event("DEBUG", "upload", f"skip (unchanged, already verified): s3://{bucket}/{key}")
                 return
 
-            sha_hex = sha_b64 = m_computed = None
-            if config.DEDUPE or size <= config.MULTIPART_THRESHOLD or want_algo:
+            # Read the whole file before uploading only when its checksum is
+            # needed up front: a small file's single PUT carries it; an object
+            # already archived under this name with the same size must be
+            # compared; and a duplicate is only possible if another archived
+            # object has exactly this size. Otherwise a large file gets its
+            # checksums (and its offload-manifest hash) during the upload's own
+            # read — one read of the file instead of two.
+            small = size <= config.MULTIPART_THRESHOLD
+            same_size = bool(existing and existing["status"] == "verified"
+                             and existing["size"] == size)
+            pre_read = small or same_size or (config.DEDUPE
+                                              and db.size_taken(bucket, size, key))
+            sha_hex = sha_b64 = None
+            if not pre_read:
+                log_event("DEBUG", "upload", f"no archived object has this size — one read "
+                                             f"only, checksums during upload: {rel}")
+            if pre_read:
                 sha_hex, sha_b64, m_computed = _hash_file(path, want_algo)
-
-                # Evaluate the manifest check now that we've read the file.
-                if mentry:
-                    algo, expected, msize = mentry
-                    m_algo, m_hash = algo, expected
-                    if m_computed is None:
-                        m_state = "algo_unsupported"
-                        log_event("WARNING", "manifest",
-                                  f"manifest hash '{algo}' not supported (install xxhash?): {rel}")
-                    elif manifest.normalize_hash(algo, m_computed) == expected:
-                        m_state = "ok"
-                    else:
-                        m_state = "mismatch"
-                        log_event("ERROR", "manifest",
-                                  f"MANIFEST MISMATCH: {rel} — {algo} manifest={expected} "
-                                  f"computed={manifest.normalize_hash(algo, m_computed)}")
-                elif m_entries:
-                    m_state = "not_in_manifest"
+                m_state, m_algo, m_hash = _manifest_state(mentry, m_computed, m_entries, rel)
 
                 if (existing and existing["status"] == "verified"
                         and existing["sha256"] == sha_hex):
@@ -384,7 +400,10 @@ class Uploader:
                 bytes_to_credit = size
             else:
                 # multipart credits session bytes per part as it goes
-                hex_sha, expected, resp = self._multipart(bucket, path, key, sid, size)
+                hex_sha, expected, resp, m_computed = self._multipart(
+                    bucket, path, key, sid, size, extra_algo=None if pre_read else want_algo)
+                if not pre_read:
+                    m_state, m_algo, m_hash = _manifest_state(mentry, m_computed, m_entries, rel)
                 bytes_to_credit = 0
             elapsed = max(time.monotonic() - t0, 1e-6)
 
@@ -430,7 +449,7 @@ class Uploader:
             "--checksum-sha256", sha_b64,
         )
 
-    def _multipart(self, bucket, path, key, sid, size):
+    def _multipart(self, bucket, path, key, sid, size, extra_algo=None):
         """s3api multipart upload with per-part SHA-256 checksums.
         Parts are staged to temp files by one sequential read pass (which also
         feeds the whole-file hash) and uploaded by COLDVAULT_PART_WORKERS
@@ -440,7 +459,10 @@ class Uploader:
         Expected final checksum is the composite: sha256 over the concatenated
         raw part digests, suffixed with -<part count>.
         Session byte progress is credited after every part (and rolled back
-        on failure) so the UI shows movement during large files."""
+        on failure) so the UI shows movement during large files.
+        With `extra_algo` (an offload manifest's hash), that digest is computed
+        in the same read; returns (sha256 hex, composite checksum, response,
+        extra digest or None)."""
         resp = awsapi.s3api(
             "create-multipart-upload",
             "--bucket", bucket, "--key", key,
@@ -449,6 +471,7 @@ class Uploader:
         )
         upload_id = resp["UploadId"]
         whole = hashlib.sha256()
+        extra = manifest.new_hasher(extra_algo) if extra_algo else None
         digests, futures = [], []
         lock = threading.Lock()
         state = {"uploaded": 0}
@@ -506,6 +529,8 @@ class Uploader:
                                     tf.write(blk)
                                     ph.update(blk)
                                     whole.update(blk)
+                                    if extra is not None:
+                                        extra.update(blk)
                                     wrote += len(blk)
                                     remaining -= len(blk)
                         except Exception:
@@ -547,7 +572,8 @@ class Uploader:
 
             composite = base64.b64encode(
                 hashlib.sha256(b"".join(digests)).digest()).decode() + f"-{len(parts)}"
-            return whole.hexdigest(), composite, cresp
+            return (whole.hexdigest(), composite, cresp,
+                    extra.hexdigest() if extra is not None else None)
         except Exception:
             db.bump_session(sid, bytes_done=-state["uploaded"])
             awsapi.quiet_abort(bucket, key, upload_id)

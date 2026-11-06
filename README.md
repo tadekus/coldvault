@@ -25,7 +25,11 @@ everything it does.
   changed), so interrupted uploads simply resume. With `COLDVAULT_DEDUPE=true`
   (default) a file whose exact content (SHA-256 + size) is already archived in the
   bucket under *any* key is skipped too, and the log tells you which object it
-  duplicates — applies to both canary and manual uploads.
+  duplicates — applies to both canary and manual uploads. A large file is read
+  ahead of its upload only when a duplicate is possible at all (another archived
+  object has exactly its size) or the same name was archived with the same size;
+  otherwise its checksums — and its offload-manifest hash — are computed during the
+  upload's own read, so it is read once, not twice.
 - **Multi-bucket aware** — the index records which bucket every object lives in.
   Switch buckets freely (pick one from the UI), the Index tab can filter per bucket or
   search across all, and restores always target the bucket the object was uploaded to.
@@ -610,9 +614,11 @@ upper/lower case (S3 would make it a second folder). With **no prefix** the line
 that the files go to the top of the bucket under a folder's name, and so does the
 confirmation. The box starts empty each time, so one film can't quietly inherit the
 previous film's prefix.
-**Start upload** counts the selection on the machine that has it and confirms with the
-real numbers — *1 ticked folder · 48,211 files · 50.2 TB → s3://bucket/Hotel
-Example/RAID01/…* — or with a current preview's totals.
+**Start upload** counts the selection on the machine that has it and asks in a
+confirmation window with the real numbers (*48,211 files · 50.2 TB*, or a current
+preview's totals), the destination, and **what goes where**: every ticked folder or
+file with the exact place it lands (`/mnt/raid/RAID01/Day01 → s3://bucket/Hotel
+Example/RAID01/Day01/…`). Long lists scroll; nothing is cut off.
 
 ### Stopping an upload
 

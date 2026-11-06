@@ -4,6 +4,26 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.23.0
+
+- **Large files are read once, not twice.** Before uploading a file above the
+  multipart threshold, ColdVault used to read it in full just for the duplicate
+  check.
+  - Now it only does that when a duplicate is possible: another archived object in
+    the bucket has exactly that size, or the same name was archived with the same
+    size.
+  - Otherwise the SHA-256 and any offload-manifest hash (.mhl/.csv) are computed
+    during the upload's own read. For video files that's nearly always, saving one
+    full read per file.
+  - Duplicates are still caught, and the manifest check still runs.
+  - Adds an index on file sizes, and a `size_taken` lookup agents can call.
+- **Start upload asks in ColdVault's own confirmation window** instead of the
+  browser's.
+  - It shows: from which machine, the file count and size, the destination, and
+    every ticked folder or file with the exact place it lands in S3.
+  - Long paths wrap and long lists scroll, so nothing is cut off. Esc or a click
+    outside cancels.
+
 ## 1.22.0
 
 - **Prefix suggestions.** The manual-upload prefix box lists:

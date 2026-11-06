@@ -307,6 +307,8 @@ class Hub:
         "get_file": lambda self, name, bucket, key: db.get_file(bucket, key),
         "find_duplicate": lambda self, name, bucket, sha, size, exclude_key:
             db.find_duplicate(bucket, sha, size, exclude_key),
+        "size_taken": lambda self, name, bucket, size, exclude_key:
+            db.size_taken(bucket, size, exclude_key),
         "find_keys_any_bucket": lambda self, name, keys: db.find_keys_any_bucket(keys),
         "get_dl_session": _get_dl_session,
         "update_dl_session": _update_dl_session,

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS files(
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
 CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id);
 CREATE INDEX IF NOT EXISTS idx_files_sha ON files(bucket, sha256);
+CREATE INDEX IF NOT EXISTS idx_files_size ON files(bucket, size);
 
 CREATE TABLE IF NOT EXISTS sessions(
   id INTEGER PRIMARY KEY,
@@ -520,6 +521,13 @@ def verified_sizes(bucket):
     return {r["size"]: r["key"] for r in _rows(
         "SELECT size, MIN(key) AS key FROM files WHERE bucket=? AND status='verified' "
         "GROUP BY size", (bucket,))}
+
+
+def size_taken(bucket, size, exclude_key):
+    """Is any other verified object in the bucket exactly this size? If not,
+    a file of this size can't be a duplicate — no need to read it first."""
+    return _row("""SELECT 1 AS x FROM files WHERE bucket=? AND size=? AND status='verified'
+                   AND key != ? LIMIT 1""", (bucket, size, exclude_key)) is not None
 
 
 def find_duplicate(bucket, sha256, size, exclude_key):

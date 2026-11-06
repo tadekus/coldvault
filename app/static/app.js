@@ -13,6 +13,31 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// An in-page confirmation: unlike confirm(), long content scrolls instead of
+// being cut, and it can show lists. Resolves true on the OK button.
+function confirmBox(title, html, okText = "OK") {
+  return new Promise(resolve => {
+    const bg = document.createElement("div");
+    bg.className = "modal-bg";
+    bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h3></h3><div class="mbody">${html}</div>
+      <div class="mbtns"><button class="secondary" data-a="0">Cancel</button>
+        <button data-a="1"></button></div></div>`;
+    bg.querySelector("h3").textContent = title;
+    bg.querySelector('[data-a="1"]').textContent = okText;
+    const done = v => { bg.remove(); document.removeEventListener("keydown", key); resolve(v); };
+    const key = e => { if (e.key === "Escape") done(false); };
+    bg.addEventListener("click", e => {
+      if (e.target === bg) done(false);
+      const a = e.target.closest("[data-a]");
+      if (a) done(a.dataset.a === "1");
+    });
+    document.addEventListener("keydown", key);
+    document.body.appendChild(bg);
+    bg.querySelector('[data-a="1"]').focus();
+  });
+}
+
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -851,16 +876,16 @@ $("#btnUpload").onclick = async () => {
   // The real numbers: from a current preview, or counted now on the machine.
   let totals;
   if ($("#upPreview .uppreview") && upPreviewFor === JSON.stringify(body)) {
-    totals = $("#upPreview .upsum").innerText.replace(/\n+/g, "\n");
+    totals = esc($("#upPreview .upsum").innerText.replace(/\n+/g, " · "));
   } else {
     $("#btnUpload").disabled = true;
     $("#upPreview").innerHTML = `<div class="muted">counting the files on ${esc(machine(body.location))}…
       (a large array can take a minute)</div>`;
     try {
       const c = await api("/api/upload/count", { body });
-      totals = `${c.count.toLocaleString()} file(s) · ${fmtBytes(c.bytes)}`
-        + (c.excluded_count ? `  (+${c.excluded_count.toLocaleString()} excluded by name)` : "")
-        + `\nFiles already archived are skipped as it goes.`;
+      totals = `<b>${c.count.toLocaleString()}</b> file(s) · <b>${fmtBytes(c.bytes)}</b>`
+        + (c.excluded_count ? ` <span class="muted">(+${c.excluded_count.toLocaleString()} excluded by name)</span>` : "")
+        + `<div class="muted" style="font-size:12px">Files already archived are skipped as it goes.</div>`;
       body._keys = `s3://${c.bucket}/${c.key_prefix}/`;
     } catch (e) {
       $("#upPreview").innerHTML = "";
@@ -872,10 +897,24 @@ $("#btnUpload").onclick = async () => {
   }
   const keys = body._keys || `s3://${body.bucket}/${upKeyStart(body)}`;
   delete body._keys;
+  // Each ticked item (or the folder) with where it lands: the destination start
+  // plus its path inside the folder the keys are made relative to.
+  const src = upSource(body).replace(/\/+$/, "");
+  const rows = (body.items || [body.path]).map(p => {
+    const dir = !body.items || uploadSel.get(p).type === "dir";
+    const rel = p === src ? "" : p.slice(src.length + 1);
+    return `<div>${dir ? "📁" : "📄"} ${esc(p)}<br><span class="to">→ ${esc(keys + rel)}${
+      dir ? (rel ? "/" : "") + "…" : ""}</span></div>`;
+  }).join("");
   const noPrefix = !body.prefix.replace(/[\s/]/g, "")
-    ? `⚠ NO PREFIX — these files go to the top level of the bucket.\n\n` : "";
-  if (!confirm(`${noPrefix}Upload ${what}?\n\nFrom: ${machine(body.location)}\n${totals}\n\n`
-             + `Destination: ${keys}…`)) return;
+    ? `<div class="banner warn" style="margin:6px 0">⚠ No prefix — these files go to the top level
+       of the bucket. Cancel and set a prefix (e.g. the film's name) if that's not what you want.</div>` : "";
+  if (!await confirmBox(`Upload ${what}?`,
+      `${noPrefix}<div class="kv"><b>From</b><span>${esc(machine(body.location))}</span>
+         <b>Files</b><span>${totals}</span>
+         <b>Destination</b><span class="mono" style="word-break:break-all">${esc(keys)}</span></div>
+       <div class="muted" style="font-size:12px;margin:8px 0 4px">What goes where:</div>
+       <div class="mlist">${rows}</div>`, "Start upload")) return;
   try {
     const r = await api("/api/upload", { body });
     alert(`Upload session #${r.session_id} queued on ${r.location} → s3://${r.bucket}`);

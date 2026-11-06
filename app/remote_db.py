@@ -129,6 +129,10 @@ def find_duplicate(bucket, sha256, size, exclude_key):
     return _call("find_duplicate", bucket, sha256, size, exclude_key)
 
 
+def size_taken(bucket, size, exclude_key):
+    return _call("size_taken", bucket, size, exclude_key)
+
+
 def claim_upload(bucket, key, sid, **fields):
     return _call("claim_upload", bucket, key, sid, **fields)
 
