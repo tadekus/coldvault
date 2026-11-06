@@ -453,6 +453,29 @@ def claim_upload(bucket, key, sid, sha256=None, **fields):
         return {"state": "ok"}
 
 
+def preview_rows(bucket, keys):
+    """For an upload preview: the index row of each key that has one, with the
+    machine and state of the session that last wrote it. {key: row}"""
+    out, keys = {}, list(keys)
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        for r in _rows(f"""SELECT f.key, f.status, f.size, f.mtime, f.session_id,
+                                  s.location AS s_location, s.status AS s_status
+                           FROM files f LEFT JOIN sessions s ON s.id = f.session_id
+                           WHERE f.bucket=? AND f.key IN ({','.join('?' * len(chunk))})""",
+                       [bucket] + chunk):
+            out[r["key"]] = r
+    return out
+
+
+def verified_sizes(bucket):
+    """{size: one key} over the bucket's verified objects — for the preview's
+    'may be a duplicate' hint (only a checksum can tell for sure)."""
+    return {r["size"]: r["key"] for r in _rows(
+        "SELECT size, MIN(key) AS key FROM files WHERE bucket=? AND status='verified' "
+        "GROUP BY size", (bucket,))}
+
+
 def find_duplicate(bucket, sha256, size, exclude_key):
     """A verified object in the same bucket with identical content."""
     return _row("""SELECT key FROM files WHERE bucket=? AND sha256=? AND size=?

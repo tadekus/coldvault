@@ -417,8 +417,14 @@ skipped).
 OS junk (`.DS_Store`, `System Volume Information`, `.Trash-*`, resource forks etc.) is
 excluded — configurable via `COLDVAULT_EXCLUDE`.
 
-Set `COLDVAULT_AUTO_UPLOAD=false` if you want canary detection to only log the event so
-you can start uploads manually from the dashboard.
+**Auto-upload is switched per machine** on the Dashboard: the **Auto-upload** line of
+this machine, and the **Auto-upload** column of each [agent](#second-machine-agent).
+With it off, a plugged-in canary drive is detected but **waits**: it shows ⏸ with
+**Upload now** (the whole drive, with the canary's label and bucket — exactly what
+auto-upload would have done) and **Pick files…** (opens the Manual upload tree at the
+drive, to tick parts of it and preview first). A drive that was already uploaded offers
+**Upload again**. The switches are stored in the database; `COLDVAULT_AUTO_UPLOAD` (default
+`true`) is only the starting value for a machine never switched.
 
 > ⚠️ Auto-upload sends **everything on the drive** to Deep Archive, which has a
 > 180-day minimum storage charge per object (deleting earlier still bills the full
@@ -492,8 +498,10 @@ separate usb-to-nextcloud sync if you run one (they mount at different paths).
 
 ## Manual uploads
 
-Any folder can be uploaded from the dashboard (path field or **Browse**), as long as
-it is (a) bind-mounted into the container and (b) listed in `COLDVAULT_BROWSE_ROOTS`.
+Any folder can be uploaded from the dashboard's **Manual upload** box, as long as it is
+(a) bind-mounted into the container and (b) listed in `COLDVAULT_BROWSE_ROOTS`. With a
+[second machine](#second-machine-agent), **Upload from** picks the machine whose folders
+you see; the same steps then run there.
 
 Every manual upload names its destination in **Upload to bucket**. The list offers the
 active bucket (preselected), the `.env` default, the canary allowlist and every bucket
@@ -535,24 +543,48 @@ name. The override can also redirect where downloads land — see the template.
 docker-compose.mac.yml`; add `-f docker-compose.override.yml` explicitly, or use the
 commented `testdata` mount in `docker-compose.mac.yml`.)
 
-The dashboard shows an **Accessible locations** list of every configured upload root
-(the watch dirs plus `COLDVAULT_BROWSE_ROOTS`), so you don't have to remember paths —
-click one to start browsing. Each root is checked live inside the container: readable
-roots are clickable, while ones that are configured but missing show as *(not mounted)*
-and ones present but without permission show as *(not readable)* — a quick way to
-confirm a new volume mount actually landed. Drilling into a folder lists its subfolders
-and its files (with sizes).
+The box shows a **tree** of every configured upload root (the watch dirs plus
+`COLDVAULT_BROWSE_ROOTS`), so you don't have to remember paths. Each root is checked
+live inside the container: ones that are configured but missing show as *(not mounted)*
+and ones present but without permission as *(not readable)* — a quick way to confirm a
+new volume mount actually landed. ▸ opens a folder in place (its subfolders and files,
+with sizes); names that are never uploaded (`COLDVAULT_EXCLUDE`, the canary file) are
+shown greyed as *excluded*.
 
 ### Uploading a whole folder or just parts of it
 
-Each folder and file in the browser has a checkbox:
+Every folder and file in the tree has a checkbox:
 
-- **Tick nothing** and **Start upload** archives the whole current folder (the original
-  behaviour).
-- **Tick specific folders and/or files** and only those are uploaded — folders
-  recursively. **Select all here** ticks everything in the current listing, **Clear
-  selection** empties it, and the selection **persists as you navigate**, so you can
-  gather items from several subfolders into one upload.
+- **Tick specific folders and/or files** and only those are uploaded. A ticked folder
+  takes everything inside it — its contents show ticked and greyed. Ticks stay while you
+  open and close other folders, so one upload can gather items from all over the tree;
+  **Clear selection** empties it.
+- **Tick nothing** and **Start upload** archives the whole *open* folder — the folder
+  whose name you last clicked (shown in the path field), or a path typed there (**Open**
+  jumps the tree to it).
+
+### Preview: what would actually upload
+
+**Preview** lists the selection on the machine that has it — with the same rules the
+upload uses — and checks every file against the index, without reading any file or
+calling AWS. It shows the S3 key each file would get and sorts them into:
+
+| Group | Uploads? |
+|---|---|
+| **New** | yes |
+| **Changed since it was archived** (different size) — replaces the archived copy | yes |
+| **Not archived yet** — an earlier upload failed or didn't finish | yes |
+| **Same size, different date** — read and compared during the upload | only if the content differs |
+| **New here, but an object of the same size is already archived** | only if the content differs (duplicate check) |
+| **Being uploaded right now** by another session | no — skipped if that one archives the same content |
+| **Already archived and unchanged** | no |
+| **Other content already archived under this name from another machine** | no — refused; use another label |
+| **Excluded by name** | no |
+
+with totals at the top (e.g. *Uploads 212 files · 1.4 TB*). Changing the selection,
+label or bucket marks the preview out of date; the confirmation of **Start upload**
+repeats the totals of a current preview. A preview covers up to 200,000 files — preview
+a bigger drive in parts.
 
 Keys mirror the structure under the **common parent** of your selection, so selecting a
 folder produces exactly the same keys as a whole-folder upload of it, and picking two
@@ -963,11 +995,15 @@ database, serves the web UI, and does everything it does today. The second one i
 **agent**: it does only the work that has to happen where its disks are.
 
 - **Canary drives plugged into the agent** upload automatically, exactly like on the
-  master — same canary file, same bucket choice, same one-upload-per-plug-in rule. The
-  Dashboard's **Agents** box shows each agent, online or not, what it's doing, and the
-  drives it sees.
-- **Manual uploads**: pick the agent in **Upload from**, browse its folders, start the
-  upload. The agent reads its own disk and sends the files straight to S3.
+  master — same canary file, same bucket choice, same one-upload-per-plug-in rule — or,
+  with its **Auto-upload** switched off on the Dashboard, wait for **Upload now** /
+  **Pick files…** ([per machine](#the-canary-workflow)). The Dashboard's **Agents** box
+  shows each agent, online or not, what it's doing, and the drives it sees.
+- **Manual uploads**: pick the agent in **Upload from**, tick files and folders in its
+  tree, **Preview**, start the upload. The agent reads its own disk and sends the files
+  straight to S3. To make another of its folders available (e.g. a RAID at `/mnt/raid`),
+  mount it read-only in that machine's `docker-compose.override.yml` and list it in its
+  `.env` as `COLDVAULT_BROWSE_ROOTS` — see [Manual uploads](#manual-uploads).
 - **Downloads**: pick the agent in **Download to** on the Downloads tab. Restored files
   are fetched straight from S3 onto the agent's disk and checksum-verified there. "Local
   file", **Check local files** and the leftover-file scan then show that machine.

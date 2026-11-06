@@ -28,6 +28,60 @@ def make_key(label, rel):
     return "/".join(p for p in parts if p)
 
 
+def _left_out(name):
+    return _excluded(name) or name == config.CANARY_NAME
+
+
+def scan(root, skipped=None):
+    """Every file an upload of folder `root` includes, as (path, size, mtime).
+    Excluded names (COLDVAULT_EXCLUDES, the canary file) are left out; when
+    `skipped` is a list, they are recorded there (folders with a trailing /),
+    which is what the upload preview shows."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep = []
+        for d in dirnames:
+            if _excluded(d):
+                if skipped is not None:
+                    skipped.append(os.path.join(dirpath, d) + "/")
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            if _left_out(fn):
+                if skipped is not None:
+                    skipped.append(p)
+                continue
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if not os.path.isfile(p):
+                continue
+            found.append((p, st.st_size, st.st_mtime))
+    return found
+
+
+def scan_items(items, skipped=None):
+    """An explicit selection: folders are walked, files taken as they are."""
+    found = []
+    for it in items:
+        if os.path.isdir(it):
+            found.extend(scan(it, skipped))
+        elif os.path.isfile(it):
+            if _left_out(os.path.basename(it)):
+                if skipped is not None:
+                    skipped.append(it)
+                continue
+            try:
+                st = os.stat(it)
+            except OSError:
+                continue
+            found.append((it, st.st_size, st.st_mtime))
+    return found
+
+
 def fmt_speed(bps):
     for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
         if bps < 1000 or unit == "GB/s":   # decimal (SI), as transfer tools report
@@ -128,46 +182,12 @@ class Uploader:
 
     # ---- session ----
 
-    def _scan(self, root):
-        found = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if not _excluded(d)]
-            for fn in filenames:
-                if _excluded(fn) or fn == config.CANARY_NAME:
-                    continue
-                p = os.path.join(dirpath, fn)
-                try:
-                    st = os.stat(p)
-                except OSError:
-                    continue
-                if not os.path.isfile(p):
-                    continue
-                found.append((p, st.st_size, st.st_mtime))
-        return found
-
-    def _scan_items(self, items):
-        """Scan an explicit selection: directories are walked, files taken as-is."""
-        found = []
-        for it in items:
-            if os.path.isdir(it):
-                found.extend(self._scan(it))
-            elif os.path.isfile(it):
-                fn = os.path.basename(it)
-                if _excluded(fn) or fn == config.CANARY_NAME:
-                    continue
-                try:
-                    st = os.stat(it)
-                except OSError:
-                    continue
-                found.append((it, st.st_size, st.st_mtime))
-        return found
-
     def _run_session(self, sid):
         s = db.get_session(sid)
         root, label, bucket = s["source"], s["label"], s["bucket"]
         sel = json.loads(s["items"]) if s.get("items") else None
         db.update_session(sid, status="scanning")
-        files = self._scan_items(sel) if sel else self._scan(root)
+        files = scan_items(sel) if sel else scan(root)
         total_bytes = sum(f[1] for f in files)
         db.update_session(sid, total_files=len(files), total_bytes=total_bytes, status="running")
         log_event("INFO", "upload",

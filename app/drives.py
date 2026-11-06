@@ -24,6 +24,24 @@ def _where(location):
     return f" on {location}" if location else ""
 
 
+def _auto_key(location):
+    return f"auto_upload:{location or ''}"
+
+
+def auto_upload(location):
+    """Do canary drives on this machine ('' = the master) upload by themselves?
+    Switched per machine in the UI and stored here on the master;
+    COLDVAULT_AUTO_UPLOAD is the answer for a machine never switched."""
+    v = db.get_setting(_auto_key(location))
+    return config.AUTO_UPLOAD if v is None else v == "1"
+
+
+def set_auto_upload(location, on):
+    db.set_setting(_auto_key(location), "1" if on else "0")
+    log_event("INFO", "watcher", f"auto-upload of canary drives turned {'ON' if on else 'OFF'}"
+                                 f"{_where(location) or ' on this machine'}")
+
+
 class DriveTracker:
     def __init__(self, start_session):
         # start_session(location, mount, label, bucket) -> session id
@@ -37,8 +55,37 @@ class DriveTracker:
             self.active.pop(location, None)
 
     def drives(self, location):
+        """This machine's canary drives, each marked `running` while its upload
+        session is still going (so the UI offers Upload now only when it isn't)."""
         with self._lock:
-            return dict(self.active.get(location, {}))
+            found = {m: dict(i) for m, i in self.active.get(location, {}).items()}
+        for i in found.values():
+            s = db.get_session(i["session_id"]) if i.get("session_id") else None
+            i["running"] = bool(s and s["status"] in db.ACTIVE)
+        return found
+
+    def upload_now(self, location, mount):
+        """Start the upload of a drive that is plugged in but waiting — auto-upload
+        is off for its machine, it was already uploaded, or its last run ended.
+        Same label and bucket as an automatic upload would use."""
+        with self._lock:
+            cur = dict(self.active.get(location, {}).get(mount) or {})
+        if not cur:
+            raise LookupError(f"no canary drive at {mount}{_where(location)} right now")
+        s = db.get_session(cur["session_id"]) if cur.get("session_id") else None
+        if s and s["status"] in db.ACTIVE:
+            raise ValueError(f"{mount} is already uploading (session #{cur['session_id']})")
+        bucket, err = self._resolve_bucket({"bucket": cur.get("canary_bucket")})
+        if err:
+            raise ValueError(f"not uploading {mount}: {err}")
+        log_event("INFO", "watcher", f"upload of {mount}{_where(location)} started by hand "
+                                     f"(label='{cur['label']}') -> s3://{bucket}")
+        sid = self.start_session(location, mount, cur["label"], bucket)
+        with self._lock:
+            if mount in self.active.get(location, {}):
+                self.active[location][mount].update(
+                    session_id=sid, bucket=bucket, error=None, seeded=False, waiting=False)
+        return sid
 
     def update(self, location, found):
         """`found` = {mount: {"label", "bucket"}} as scanned on `location`."""
@@ -51,7 +98,7 @@ class DriveTracker:
             new = {m: i for m, i in found.items() if m not in seen}
             for m, i in new.items():   # placeholder so a slow decision isn't repeated
                 seen[m] = {"label": i["label"], "bucket": i["bucket"], "session_id": None,
-                           "detected_at": db.now(), "error": None}
+                           "canary_bucket": i["bucket"], "detected_at": db.now(), "error": None}
         for m in gone:
             log_event("INFO", "watcher", f"drive unplugged / canary gone{_where(location)}: {m}")
         for mount, info in new.items():
@@ -61,7 +108,8 @@ class DriveTracker:
                 log_event("ERROR", "watcher", f"canary handling failed for {mount}"
                           f"{_where(location)}: {e}")
                 result = {"label": info["label"], "bucket": info["bucket"], "session_id": None,
-                          "detected_at": db.now(), "error": str(e)}
+                          "canary_bucket": info["bucket"], "detected_at": db.now(),
+                          "error": str(e)}
             with self._lock:
                 if mount in self.active.get(location, {}):
                     self.active[location][mount] = result
@@ -88,25 +136,28 @@ class DriveTracker:
                           f"drive already uploaded to s3://{bucket} (last session done), "
                           f"still mounted at {mount}{where} — not re-uploading; replug to re-scan")
                 return {"label": info["label"], "bucket": bucket, "session_id": None,
-                        "detected_at": db.now(), "error": None, "seeded": True}
+                        "canary_bucket": info["bucket"], "detected_at": db.now(),
+                        "error": None, "seeded": True}
 
         bucket, err = self._resolve_bucket(info)
         log_event("INFO", "watcher",
                   f"canary detected at {mount}{where} (label='{info['label']}'"
                   + (f", canary bucket='{info['bucket']}'" if info["bucket"]
                      else ", no bucket named — using the active one") + ")")
-        sid = None
+        sid, waiting = None, False
         if err:
             # Kept in `active` with the error, so this is logged once per
             # plug-in instead of every scan.
             log_event("ERROR", "watcher",
                       f"not uploading {mount}{where}: {err} — fix the canary "
                       f"(or COLDVAULT_CANARY_BUCKETS) and replug the drive")
-        elif config.AUTO_UPLOAD:
+        elif auto_upload(location):
             sid = self.start_session(location, mount, info["label"], bucket)
         else:
-            log_event("WARNING", "watcher",
-                      f"auto-upload disabled — start upload of {mount}{where} "
-                      f"manually (target s3://{bucket})")
+            waiting = True
+            log_event("INFO", "watcher",
+                      f"auto-upload is off{where or ' on this machine'} — {mount} waits; "
+                      f"start it with Upload now or pick files (target s3://{bucket})")
         return {"label": info["label"], "bucket": bucket or info["bucket"],
-                "session_id": sid, "detected_at": db.now(), "error": err}
+                "canary_bucket": info["bucket"], "session_id": sid,
+                "detected_at": db.now(), "error": err, "waiting": waiting}

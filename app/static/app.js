@@ -107,7 +107,9 @@ async function loadDashboard() {
       <div><b>Canary buckets</b>${(st.canary_buckets || []).length
         ? `<code>${esc(st.canary_buckets.join(", "))}</code>`
         : `<span class="muted">any accessible (a canary may name its own)</span>`}</div>
-      <div><b>Auto-upload</b>${st.auto_upload ? "enabled" : "disabled"}</div>
+      <div><b>Auto-upload</b><label title="canary drives plugged into this machine start uploading by themselves">
+        <input type="checkbox" class="autoUp" data-loc="" ${st.auto_upload ? "checked" : ""}>
+        ${st.auto_upload ? "on — canary drives upload when plugged in" : "off — plugged-in drives wait for Upload now"}</label></div>
       <div><b>Upload queue</b>${st.queue_size} waiting${st.current_session ? `, session #${st.current_session} running` : ""}</div>` +
       ((st.uploading || []).length
         ? `<div><b>Uploading now</b><div class="uplist">` +
@@ -119,12 +121,7 @@ async function loadDashboard() {
 
     const mounts = Object.entries(st.active_mounts || {});
     $("#activeMounts").innerHTML = mounts.length
-      ? mounts.map(([m, i]) =>
-          `<div><code>${esc(m)}</code> → label <b>${esc(i.label)}</b>` +
-          (i.bucket ? ` in <code>s3://${esc(i.bucket)}</code>` : "") +
-          (i.session_id ? ` (session #${i.session_id})` : "") +
-          (i.error ? `<div style="color:var(--err)">✘ ${esc(i.error)}</div>` : "") +
-          `</div>`).join("")
+      ? mounts.map(([m, i]) => driveLine("", m, i)).join("")
       : "none";
 
     loadAgents(st.agents_enabled, st.version);
@@ -136,6 +133,59 @@ async function loadDashboard() {
     $("#statCards").innerHTML = `<div class="card"><div class="lbl">error: ${esc(e.message)}</div></div>`;
   }
 }
+
+// One canary drive, on this master ("") or an agent. A drive with no upload
+// running offers Upload now (same label and bucket as automatic) and Pick
+// files… (the Manual upload tree, opened at the drive).
+function driveLine(loc, m, d, online = true) {
+  let s = `<div><code>${esc(m)}</code> → <b>${esc(d.label)}</b>${d.bucket ? ` in <code>s3://${esc(d.bucket)}</code>` : ""}`;
+  if (d.session_id) s += ` (session #${d.session_id}${d.running ? ", running" : ""})`;
+  else if (d.seeded) s += ` <span class="muted">(already uploaded)</span>`;
+  else if (d.waiting) s += ` <span style="color:var(--warn)">⏸ waiting — auto-upload is off</span>`;
+  if (d.error) s += `<div style="color:var(--err)">✘ ${esc(d.error)}</div>`;
+  if (!d.running && !d.error && online)
+    s += `<div class="drvacts">
+      <button class="secondary drvUp" data-loc="${esc(loc)}" data-m="${esc(m)}" data-label="${esc(d.label)}"
+        data-bucket="${esc(d.bucket || "")}">${d.session_id || d.seeded ? "Upload again" : "Upload now"}</button>
+      <button class="secondary drvPick" data-loc="${esc(loc)}" data-m="${esc(m)}">Pick files…</button></div>`;
+  return s + `</div>`;
+}
+
+document.addEventListener("change", async e => {
+  const cb = e.target.closest(".autoUp");
+  if (!cb) return;
+  const loc = cb.dataset.loc, on = cb.checked;
+  try {
+    await api("/api/auto-upload", { body: { location: loc, enabled: on } });
+  } catch (err) {
+    cb.checked = !on;
+    return alert("✘ " + err.message);
+  }
+  loadDashboard();
+});
+
+document.addEventListener("click", async e => {
+  const up = e.target.closest(".drvUp"), pick = e.target.closest(".drvPick");
+  if (up) {
+    const { loc, m, label, bucket } = up.dataset;
+    if (!confirm(`Upload the drive ${m} on ${machine(loc)} now?\n\nLabel: ${label}\n`
+               + `Destination: s3://${bucket || "(active bucket)"}\n\nAlready archived files are skipped.`)) return;
+    try {
+      const r = await api("/api/drives/upload", { body: { location: loc, mount: m } });
+      alert(`Upload session #${r.session_id} started for ${m}`);
+    } catch (err) { alert("✘ " + err.message); }
+    loadDashboard();
+  } else if (pick) {
+    const { loc, m } = pick.dataset;
+    const sel = $("#uploadFrom");
+    if (sel.value !== loc && [...sel.options].some(o => o.value === loc)) {
+      sel.value = loc;
+      await switchUploadFrom();
+    }
+    $("#manualUploadBox").scrollIntoView({ behavior: "smooth", block: "start" });
+    await treeOpenAt(m);
+  }
+});
 
 async function loadAgents(enabled, masterVersion) {
   let r;
@@ -152,7 +202,7 @@ async function loadAgents(enabled, masterVersion) {
     return;
   }
   el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Agent</th><th>Status</th>
-      <th>Activity</th><th>Canary drives</th><th>Download folder</th><th>Version</th><th></th>
+      <th>Activity</th><th>Canary drives</th><th>Auto-upload</th><th>Download folder</th><th>Version</th><th></th>
     </tr></thead><tbody>${r.agents.map(a => {
       const i = a.info || {}, act = i.activity || {}, w = a.work || {};
       const status = a.online
@@ -164,14 +214,14 @@ async function loadAgents(enabled, masterVersion) {
         w.uploads || w.downloads
           ? `<span class="muted">${w.uploads} upload / ${w.downloads} download session(s) open</span>` : "",
       ].filter(Boolean).join("<br>") || `<span class="muted">idle</span>`;
-      const drives = Object.entries(a.drives || {}).map(([m, d]) =>
-        `<div><code>${esc(m)}</code> → <b>${esc(d.label)}</b>${d.bucket ? ` in <code>s3://${esc(d.bucket)}</code>` : ""}`
-        + (d.session_id ? ` (session #${d.session_id})` : d.seeded ? ` <span class="muted">(already uploaded)</span>` : "")
-        + (d.error ? `<div style="color:var(--err)">✘ ${esc(d.error)}</div>` : "") + `</div>`).join("")
+      const drives = Object.entries(a.drives || {}).map(([m, d]) => driveLine(a.name, m, d, a.online)).join("")
         || `<span class="muted">none</span>`;
+      const auto = `<label title="canary drives plugged into ${esc(a.name)} start uploading by themselves">
+        <input type="checkbox" class="autoUp" data-loc="${esc(a.name)}" ${a.auto_upload ? "checked" : ""}>
+        ${a.auto_upload ? "on" : "off"}</label>`;
       const ver = !masterVersion || a.version === masterVersion ? esc(a.version)
         : `<span style="color:var(--warn)" title="the master runs ${esc(masterVersion)} — update both to match">${esc(a.version)}</span>`;
-      return `<tr><td><b>${esc(a.name)}</b></td><td>${status}</td><td>${doing}</td><td>${drives}</td>
+      return `<tr><td><b>${esc(a.name)}</b></td><td>${status}</td><td>${doing}</td><td>${drives}</td><td>${auto}</td>
         <td class="mono">${esc(i.download_dir || "—")}${i.download_free != null
           ? `<div class="muted">${fmtBytes(i.download_free)} free</div>` : ""}</td>
         <td class="mono">${ver}</td>
@@ -391,45 +441,201 @@ $("#btnUseBucket").onclick = async () => {
   }
 };
 
-/* ---------- browse + manual upload ---------- */
-async function loadBrowseRoots() {
-  try {
-    const r = await api("/api/browse/roots?" + locQ("#uploadFrom"));
-    if (!r.roots.length) {
-      $("#browseRoots").innerHTML = `<span class="muted">no roots configured — add mounts and COLDVAULT_BROWSE_ROOTS</span>`;
-      return;
-    }
-    $("#browseRoots").innerHTML = r.roots.map(root => {
-      if (!root.exists)
-        return `<span class="muted" title="mounted in compose but not present in container">${esc(root.path)} (not mounted)</span>`;
-      if (!root.readable)
-        return `<span class="muted" title="present but not readable — check permissions">${esc(root.path)} (not readable)</span>`;
-      const tag = root.is_watch ? " 👁" : "";
-      return `<a data-p="${esc(root.path)}" title="${root.is_watch ? "watch dir (canary)" : "browse root"}">🗄 ${esc(root.path)}${tag}</a>`;
-    }).join("");
-    $$("#browseRoots a").forEach(a => a.onclick = () => browse(a.dataset.p));
-  } catch (e) {
-    $("#browseRoots").innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
-  }
-}
+/* ---------- manual upload: tree, selection, preview ---------- */
+// The tree shows the upload roots of the machine picked in "Upload from"; each
+// folder loads when opened. A ticked folder covers everything inside it, so
+// its contents show ticked and greyed. With nothing ticked, Start upload sends
+// the open folder (the last folder name clicked, or a typed path).
 
 // Manual-upload selection: absolute path -> {type: "dir"|"file", name}
 const uploadSel = new Map();
 const joinPath = (dir, name) => dir.replace(/\/$/, "") + "/" + name;
+const isUnder = (p, dir) => p.startsWith(dir.replace(/\/$/, "") + "/");
+const coveredBy = p => [...uploadSel.keys()].find(s =>
+  s !== p && uploadSel.get(s).type === "dir" && isUnder(p, s));
+let upPreviewFor = null;   // the request the shown preview answers
+
+function treeDirNode(abs, name, icon = "📁 ", tag = "", excluded = false) {
+  if (excluded)
+    return `<div class="tnode tfile"><span class="tline muted" title="never uploaded (COLDVAULT_EXCLUDES)">
+      <span class="ttw"></span><span style="width:13px"></span>📁 ${esc(name)} <i>excluded</i></span></div>`;
+  return `<div class="tnode" data-p="${esc(abs)}">
+    <span class="tline"><span class="ttw" title="open / close">▸</span>
+      <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="dir" data-name="${esc(name)}">
+      <a class="tdir">${icon}${esc(name)}${tag}</a> <span class="tinfo muted"></span></span>
+    <div class="tkids" hidden></div></div>`;
+}
+
+function treeFileNode(abs, f, excluded = false) {
+  if (excluded)
+    return `<div class="tnode tfile"><span class="tline muted" title="never uploaded (COLDVAULT_EXCLUDES or the canary file)">
+      <span class="ttw"></span><span style="width:13px"></span><span class="fname">📄 ${esc(f.name)}</span>
+      ${fmtBytes(f.size)} <i>excluded</i></span></div>`;
+  return `<div class="tnode tfile"><span class="tline"><span class="ttw"></span>
+    <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="file" data-name="${esc(f.name)}">
+    <span class="fname">📄 ${esc(f.name)}</span> <span class="muted">${fmtBytes(f.size)}</span></span></div>`;
+}
+
+async function loadBrowseRoots() {
+  const el = $("#upTree");
+  try {
+    const r = await api("/api/browse/roots?" + locQ("#uploadFrom"));
+    if (!r.roots.length) {
+      el.innerHTML = `<span class="muted">no roots configured — add mounts and COLDVAULT_BROWSE_ROOTS</span>`;
+      return;
+    }
+    el.innerHTML = r.roots.map(root => {
+      if (!root.exists)
+        return `<div class="muted" title="mounted in compose but not present in the container">🗄 ${esc(root.path)} (not mounted)</div>`;
+      if (!root.readable)
+        return `<div class="muted" title="present but not readable — check permissions">🗄 ${esc(root.path)} (not readable)</div>`;
+      return treeDirNode(root.path, root.path, "🗄 ", root.is_watch ? " 👁" : "");
+    }).join("");
+    syncChecks();
+  } catch (e) {
+    el.innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
+  }
+}
+
+// Open (or with `keepOpen` false, toggle) a folder node, loading it the first
+// time. Returns the browse answer for it.
+async function toggleDir(node, keepOpen) {
+  const kids = node.querySelector(":scope > .tkids");
+  const tw = node.querySelector(":scope > .tline .ttw");
+  if (!kids.hidden && !keepOpen) { kids.hidden = true; tw.textContent = "▸"; return node._browse; }
+  kids.hidden = false;
+  tw.textContent = "▾";
+  if (node._browse) return node._browse;
+  kids.innerHTML = `<div class="muted tmsg">loading…</div>`;
+  try {
+    const r = await api("/api/browse?path=" + encodeURIComponent(node.dataset.p) + "&" + locQ("#uploadFrom"));
+    node._browse = r;
+    const ex = new Set(r.excluded || []);
+    const more = r.file_count - r.files.length;
+    kids.innerHTML = (!r.dirs.length && !r.file_count)
+      ? `<div class="muted tmsg">empty</div>`
+      : r.dirs.map(d => treeDirNode(joinPath(r.path, d), d, "📁 ", "", ex.has(d))).join("")
+        + r.files.map(f => treeFileNode(joinPath(r.path, f.name), f, ex.has(f.name))).join("")
+        + `<div class="muted tmsg">${r.dirs.length} folder(s), ${r.file_count} file(s) · ${fmtBytes(r.total_bytes)} directly in here${
+            more > 0 ? ` · ${more} more file(s) not listed — tick this folder to include them` : ""}</div>`;
+    if (r.canary)
+      node.querySelector(":scope > .tline .tinfo").textContent =
+        `canary: ${r.canary.label}${r.canary.bucket ? " → " + r.canary.bucket : ""}`;
+    syncChecks();
+    return r;
+  } catch (e) {
+    kids.innerHTML = `<div class="muted tmsg">✘ ${esc(e.message)}</div>`;
+    return null;
+  }
+}
+
+// The folder Start upload sends when nothing is ticked. A canary in it sets the
+// label and bucket the watcher would have used, so a manual re-run of a drive
+// lands in the same place.
+function setCurrent(node) {
+  $$("#upTree .tcur").forEach(n => n.classList.remove("tcur"));
+  node.classList.add("tcur");
+  $("#uploadPath").value = node.dataset.p;
+  const c = node._browse && node._browse.canary;
+  if (c) {
+    if (c.bucket) pickUploadBucket(c.bucket);
+    if (!$("#uploadLabel").value.trim()) $("#uploadLabel").value = c.label || "";
+    $("#uploadCanary").textContent = `canary in ${node.dataset.p} → label "${c.label}"`
+      + (c.bucket ? `, bucket ${c.bucket}` : ", no bucket named");
+  } else {
+    $("#uploadCanary").textContent = "";
+  }
+  updateUploadSel();
+}
+
+// Open the tree down to `path` (typed, or a drive's "Pick files…").
+async function treeOpenAt(path) {
+  path = (path || "").trim().replace(/(.)\/+$/, "$1");
+  if (!path) return;
+  let node = $$("#upTree > .tnode").find(n =>
+    path === n.dataset.p.replace(/(.)\/$/, "$1") || isUnder(path, n.dataset.p));
+  if (!node) return alert(`${path} isn't inside an upload root of ${machine(locOf("#uploadFrom"))}`);
+  for (;;) {
+    if (!await toggleDir(node, true)) break;
+    if (node.dataset.p.replace(/(.)\/$/, "$1") === path) break;
+    const next = [...node.querySelectorAll(":scope > .tkids > .tnode:not(.tfile)")].find(n =>
+      path === n.dataset.p || isUnder(path, n.dataset.p));
+    if (!next) break;
+    node = next;
+  }
+  setCurrent(node);
+  node.scrollIntoView({ block: "nearest" });
+}
+
+function syncChecks() {
+  $$("#upTree .upsel").forEach(cb => {
+    const cov = coveredBy(cb.dataset.p);
+    cb.checked = !!cov || uploadSel.has(cb.dataset.p);
+    cb.disabled = !!cov;
+    cb.title = cov ? `included: ${cov} is ticked` : "";
+  });
+  updateUploadSel();
+}
+
+function updateUploadSel() {
+  const n = uploadSel.size;
+  const dirs = [...uploadSel.values()].filter(v => v.type === "dir").length;
+  const open = $("#uploadPath").value.trim();
+  $("#uploadSelCount").textContent = n ? `${dirs} folder(s) + ${n - dirs} file(s) ticked` : "nothing ticked";
+  $("#uploadSelHint").textContent = n ? "Start upload sends only what's ticked"
+    : open ? `nothing ticked → Start upload sends the whole open folder, ${open}`
+    : "tick files or folders, or open a folder to upload it whole";
+  upPreviewStale();
+}
+
+$("#upTree").addEventListener("click", e => {
+  const node = e.target.closest(".tnode");
+  if (!node || node.classList.contains("tfile")) return;
+  if (e.target.closest(".ttw")) toggleDir(node);
+  else if (e.target.closest(".tdir")) {
+    const wasOpen = !node.querySelector(":scope > .tkids").hidden;
+    if (wasOpen && node.classList.contains("tcur")) toggleDir(node);
+    else toggleDir(node, true).then(() => setCurrent(node));
+  }
+});
+
+$("#upTree").addEventListener("change", e => {
+  const cb = e.target.closest(".upsel");
+  if (!cb) return;
+  const p = cb.dataset.p;
+  if (cb.checked) {
+    uploadSel.set(p, { type: cb.dataset.type, name: cb.dataset.name });
+    // A ticked folder covers its contents: drop picks inside it.
+    if (cb.dataset.type === "dir")
+      for (const s of [...uploadSel.keys()]) if (isUnder(s, p)) uploadSel.delete(s);
+  } else {
+    uploadSel.delete(p);
+  }
+  syncChecks();
+});
+
+$("#btnBrowse").onclick = () => treeOpenAt($("#uploadPath").value);
+$("#uploadPath").addEventListener("keydown", e => { if (e.key === "Enter") treeOpenAt(e.target.value); });
+$("#uploadPath").addEventListener("input", updateUploadSel);
+$("#uploadLabel").addEventListener("input", upPreviewStale);
+
+$("#btnClearSel").onclick = () => { uploadSel.clear(); syncChecks(); };
 
 // Switching machines: paths and the selection belong to the old one.
-$("#uploadFrom").onchange = () => {
+async function switchUploadFrom() {
   uploadSel.clear();
   $("#uploadPath").value = "";
-  $("#browseList").innerHTML = "";
-  $("#uploadSelBar").style.display = "none";
   $("#uploadCanary").textContent = "";
+  $("#upPreview").innerHTML = "";
+  upPreviewFor = null;
   const loc = locationsCache.find(l => l.value === locOf("#uploadFrom"));
   $("#uploadFromNote").textContent = loc && !loc.local
     ? `files are read and uploaded by ${loc.name} itself, straight to S3` : "";
-  $("#browseRoots").innerHTML = "loading…";
-  loadBrowseRoots();
-};
+  $("#upTree").innerHTML = "loading…";
+  updateUploadSel();
+  await loadBrowseRoots();
+}
+$("#uploadFrom").onchange = switchUploadFrom;
 
 // Destination bucket for manual uploads. Every upload says where it is going;
 // nothing is sent until a bucket is chosen here (the active one by default).
@@ -459,109 +665,116 @@ function pickUploadBucket(name) {
   if (![...sel.options].some(o => o.value === name))
     sel.insertBefore(new Option(`s3://${name}`, name), sel.firstChild);
   sel.value = name;
+  upPreviewStale();
 }
 $("#uploadBucket").onchange = () => {
   const sel = $("#uploadBucket");
-  if (sel.value !== OTHER_BUCKET) return;
-  const name = (prompt("Bucket name to upload to:", "") || "").trim();
-  if (name) pickUploadBucket(name);
-  else loadUploadBuckets();
-};
-
-function updateUploadSel() {
-  $("#uploadSelCount").textContent = `${uploadSel.size} selected`;
-  $("#uploadSelHint").textContent = uploadSel.size
-    ? "Start upload sends only the selected items"
-    : "Nothing selected → Start upload sends the whole current folder";
-}
-
-async function browse(path) {
-  try {
-    const r = await api("/api/browse?path=" + encodeURIComponent(path || "") + "&" + locQ("#uploadFrom"));
-    $("#uploadPath").value = r.path;
-    $("#uploadSelBar").style.display = "";
-
-    // This folder has a canary: start from the label and bucket the watcher
-    // would have used, so a manual re-run of a drive lands in the same place.
-    if (r.canary) {
-      if (r.canary.bucket) pickUploadBucket(r.canary.bucket);
-      if (!$("#uploadLabel").value.trim()) $("#uploadLabel").value = r.canary.label || "";
-      $("#uploadCanary").textContent = `canary here → label "${r.canary.label}"`
-        + (r.canary.bucket ? `, bucket ${r.canary.bucket}` : ", no bucket named");
-    } else {
-      $("#uploadCanary").textContent = "";
-    }
-    const rows = [];
-    if (r.parent)
-      rows.push(`<div class="browse-item"><span style="width:16px"></span><a class="navdir" data-p="${esc(r.parent)}">⬑ up</a></div>`);
-    r.dirs.forEach(d => {
-      const abs = joinPath(r.path, d);
-      rows.push(`<div class="browse-item">
-        <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="dir" data-name="${esc(d)}" ${uploadSel.has(abs) ? "checked" : ""}>
-        <a class="navdir" data-p="${esc(abs)}">📁 ${esc(d)}</a></div>`);
-    });
-    r.files.forEach(f => {
-      const abs = joinPath(r.path, f.name);
-      rows.push(`<div class="browse-item">
-        <input type="checkbox" class="upsel" data-p="${esc(abs)}" data-type="file" data-name="${esc(f.name)}" ${uploadSel.has(abs) ? "checked" : ""}>
-        <span class="fname">📄 ${esc(f.name)} <span class="muted">${fmtBytes(f.size)}</span></span></div>`);
-    });
-    const summary = `${r.dirs.length} folder(s), ${r.file_count} file(s) · ${fmtBytes(r.total_bytes)}`;
-    rows.push(`<div class="muted" style="padding:4px 2px">${summary}${r.files_truncated ? " · file list truncated" : ""}</div>`);
-    $("#browseList").innerHTML = rows.join("");
-
-    $$("#browseList a.navdir").forEach(a => a.onclick = () => browse(a.dataset.p));
-    $$("#browseList .upsel").forEach(cb => cb.onchange = () => {
-      cb.checked
-        ? uploadSel.set(cb.dataset.p, { type: cb.dataset.type, name: cb.dataset.name })
-        : uploadSel.delete(cb.dataset.p);
-      updateUploadSel();
-    });
-    updateUploadSel();
-  } catch (e) {
-    $("#browseList").innerHTML = `<span class="muted">✘ ${esc(e.message)}</span>`;
+  if (sel.value === OTHER_BUCKET) {
+    const name = (prompt("Bucket name to upload to:", "") || "").trim();
+    if (name) pickUploadBucket(name);
+    else loadUploadBuckets();
   }
-}
-$("#btnBrowse").onclick = () => browse($("#uploadPath").value);
-
-$("#btnSelAllHere").onclick = () => {
-  $$("#browseList .upsel").forEach(cb => {
-    cb.checked = true;
-    uploadSel.set(cb.dataset.p, { type: cb.dataset.type, name: cb.dataset.name });
-  });
-  updateUploadSel();
+  upPreviewStale();
 };
-$("#btnClearSel").onclick = () => {
-  uploadSel.clear();
-  $$("#browseList .upsel").forEach(cb => cb.checked = false);
-  updateUploadSel();
+
+// What Preview and Start upload send. Throws a message for the user.
+function upRequest() {
+  const label = $("#uploadLabel").value.trim();
+  const bucket = $("#uploadBucket").value;
+  const location = locOf("#uploadFrom");
+  if (!bucket || bucket === OTHER_BUCKET) throw new Error("Pick the bucket this upload should go to");
+  if (uploadSel.size) return { items: [...uploadSel.keys()].sort(), label, bucket, location };
+  const path = $("#uploadPath").value.trim();
+  if (!path) throw new Error("Tick files or folders, or open a folder to upload it whole");
+  return { path, label, bucket, location };
+}
+
+function upPreviewStale() {
+  const el = $("#upPreviewStale");
+  if (!el) return;
+  let cur = null;
+  try { cur = JSON.stringify(upRequest()); } catch (e) { /* incomplete */ }
+  el.innerHTML = cur === upPreviewFor ? ""
+    : `<div class="banner warn" style="margin-top:6px">The selection, label or bucket changed since
+       this preview — press Preview again to see what Start upload would do now.</div>`;
+}
+
+const upCount = c => `${c.count.toLocaleString()} file(s) · ${fmtBytes(c.bytes)}`;
+
+function renderUpPreview(r) {
+  const dot = { yes: "var(--ok)", maybe: "var(--warn)", no: "var(--muted)" };
+  const conflict = r.groups.find(g => g.id === "conflict");
+  const group = g => `<details${g.id === "conflict" ? " open" : ""}>
+      <summary><span style="color:${dot[g.uploads]}">●</span> <b>${g.count.toLocaleString()}</b>
+        file(s) · ${fmtBytes(g.bytes)} — ${esc(g.title)}</summary>
+      <div class="tablewrap"><table><thead><tr><th>S3 key</th><th class="num">Size</th><th></th></tr></thead>
+      <tbody>${g.files.map(f => `<tr><td class="key">${esc(f.key)}</td>
+        <td class="num" title="${f.size.toLocaleString()} bytes">${fmtBytes(f.size)}</td>
+        <td class="muted">${esc(f.note || "")}</td></tr>`).join("")}</tbody></table></div>
+      ${g.more ? `<div class="muted" style="font-size:12px">… and ${g.more.toLocaleString()} more</div>` : ""}
+    </details>`;
+  $("#upPreview").innerHTML = `<div class="box uppreview">
+    <h4>Preview · ${esc(r.location)}: ${esc(r.source)} → s3://${esc(r.bucket)}/${esc(r.key_prefix)}…</h4>
+    <div class="upsum">
+      <div><b style="color:var(--ok)">Uploads</b> ${upCount(r.uploads)}</div>
+      ${r.maybe.count ? `<div><b style="color:var(--warn)">Checked during upload</b> ${upCount(r.maybe)}
+        <span class="muted">— uploads unless identical</span></div>` : ""}
+      <div><b>Won't upload</b> ${upCount(r.skipped)}</div>
+      ${r.excluded_count ? `<div><b>Excluded by name</b> ${r.excluded_count.toLocaleString()}</div>` : ""}
+    </div>
+    ${conflict ? `<div class="banner warn" style="margin-bottom:6px">⚠ ${conflict.count} file(s) would be
+      refused: other content is already archived under the same names from another machine.
+      Usually two drives with the same label — set a different label above.</div>` : ""}
+    ${r.selected.count ? r.groups.map(group).join("") : `<div class="muted">No files to upload in this selection.</div>`}
+    ${r.excluded_count ? `<details><summary><span style="color:var(--muted)">●</span>
+        <b>${r.excluded_count.toLocaleString()}</b> excluded by name (COLDVAULT_EXCLUDES, the canary file)</summary>
+        <div class="mono" style="font-size:12px">${r.excluded.map(esc).join("<br>")}${
+          r.excluded_count > r.excluded.length ? `<br>… and ${(r.excluded_count - r.excluded.length).toLocaleString()} more` : ""}</div>
+      </details>` : ""}
+    <div id="upPreviewStale"></div>
+  </div>`;
+  upPreviewStale();
+}
+
+$("#btnUpPreview").onclick = async () => {
+  let body;
+  try { body = upRequest(); } catch (e) { return alert(e.message); }
+  $("#upPreview").innerHTML = `<div class="muted">listing the selection on ${esc(machine(body.location))}
+    and checking it against the index… (a whole drive can take a minute)</div>`;
+  $("#btnUpPreview").disabled = true;
+  try {
+    const r = await api("/api/upload/preview", { body });
+    upPreviewFor = JSON.stringify(body);
+    renderUpPreview(r);
+  } catch (e) {
+    upPreviewFor = null;
+    $("#upPreview").innerHTML = `<div style="color:var(--err)">✘ ${esc(e.message)}</div>`;
+  } finally {
+    $("#btnUpPreview").disabled = false;
+  }
 };
 
 $("#btnUpload").onclick = async () => {
-  const label = $("#uploadLabel").value.trim();
-  const bucket = $("#uploadBucket").value;
-  if (!bucket || bucket === OTHER_BUCKET)
-    return alert("Pick the bucket this upload should go to");
-  const location = locOf("#uploadFrom");
-  const dest = `\n\nFrom: ${machine(location)}\nDestination: s3://${bucket}${label ? "/" + label : ""}`;
   let body;
-  if (uploadSel.size) {
-    const items = [...uploadSel.keys()];
-    const dirs = [...uploadSel.values()].filter(v => v.type === "dir").length;
-    if (!confirm(`Upload ${items.length} selected item(s) (${dirs} folder(s), ${items.length - dirs} file(s))?${dest}`)) return;
-    body = { items, label, bucket, location };
+  try { body = upRequest(); } catch (e) { return alert(e.message); }
+  const dest = `\n\nFrom: ${machine(body.location)}\nDestination: s3://${body.bucket}${body.label ? "/" + body.label : ""}`;
+  let what;
+  if (body.items) {
+    const dirs = body.items.filter(p => uploadSel.get(p).type === "dir").length;
+    what = `Upload ${body.items.length} ticked item(s) (${dirs} folder(s), ${body.items.length - dirs} file(s))?`;
   } else {
-    const path = $("#uploadPath").value.trim();
-    if (!path) return alert("Pick a location, or select files/folders to upload");
-    if (!confirm(`Upload the entire folder ${path}?${dest}`)) return;
-    body = { path, label, bucket, location };
+    what = `Upload the entire folder ${body.path}?`;
   }
+  const pv = $("#upPreview .uppreview") && upPreviewFor === JSON.stringify(body)
+    ? `\n\nPreview: ${$("#upPreview .upsum").innerText.replace(/\n+/g, " · ")}` : "";
+  if (!confirm(what + dest + pv)) return;
   try {
     const r = await api("/api/upload", { body });
     alert(`Upload session #${r.session_id} queued on ${r.location} → s3://${r.bucket}`);
     uploadSel.clear();
-    updateUploadSel();
-    browse($("#uploadPath").value);
+    syncChecks();
+    $("#upPreview").innerHTML = "";
+    upPreviewFor = null;
     loadDashboard();
   } catch (e) {
     alert("✘ " + e.message);

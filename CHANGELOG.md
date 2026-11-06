@@ -4,6 +4,31 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.20.0
+
+- **Manual upload: a tree with a preview.**
+  - The Manual upload box shows each machine's upload roots as a tree. ▸ opens
+    folders in place, and checkboxes tick files and folders; a ticked folder takes
+    everything inside it. Names that are never uploaded are shown greyed as *excluded*.
+  - **Preview** lists the selection on the machine that has it, with the uploader's
+    own rules, and checks every file against the index. It shows each file's S3 key in
+    groups: new, changed (replaces the archived copy), not archived yet, same size but
+    a different date (compared during upload), possible duplicate, being uploaded
+    now, already archived (skipped), refused (other content from another machine
+    under the same name), excluded. Totals are shown at the top.
+  - No file is read and AWS isn't called. Changing the selection, label or bucket
+    marks the preview out of date; Start upload's confirmation repeats its totals.
+  - Works for the master and for agents. An agent must run 1.20.0 for Preview.
+- **Auto-upload per machine.**
+  - An on/off switch for this machine (Dashboard → Auto-upload) and for each agent
+    (Agents → Auto-upload column), stored in the database. `COLDVAULT_AUTO_UPLOAD`
+    is only the starting value.
+  - With it off, a plugged-in canary drive waits (⏸) and offers **Upload now**, which
+    uploads the whole drive with its canary's label and bucket, and **Pick files…**,
+    which opens the tree at the drive. An uploaded drive offers **Upload again**.
+- Internal: the uploader's file scan is shared with the preview, so both always agree
+  on what's included.
+
 ## 1.19.4
 
 - **Fix: a delete from the Tree with the delete role could fail silently.** A

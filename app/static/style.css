@@ -153,3 +153,24 @@ td.num { white-space: nowrap; text-align: right; }
 .pager { justify-content: center; margin-top: 10px; }
 .restorebar { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
 label { color: var(--muted); font-size: 13px; }
+
+/* Manual upload: tree + preview */
+.uptree { max-height: 460px; overflow: auto; border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 8px; margin-bottom: 6px; background: var(--panel2); }
+.uptree .tline { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.uptree .tline input[type=checkbox] { flex: none; margin: 0; }
+.uptree .ttw { width: 14px; flex: none; text-align: center; color: var(--muted); cursor: pointer; user-select: none; }
+.uptree .tdir { color: var(--accent); cursor: pointer; }
+.uptree .tdir:hover { text-decoration: underline; }
+.uptree .tcur > .tline .tdir { font-weight: 700; }
+.uptree .tkids { padding-left: 20px; }
+.uptree .fname { font-family: ui-monospace, monospace; font-size: 12px; }
+.uptree .tmsg { font-size: 12px; padding: 2px 0 2px 20px; }
+.uptree .tinfo { font-size: 12px; }
+.uppreview h4 { margin: 0 0 6px; word-break: break-all; }
+.upsum { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 6px 0 10px; }
+.uppreview details { border-top: 1px solid var(--border); padding: 4px 0; }
+.uppreview summary { cursor: pointer; padding: 3px 0; }
+.uppreview table { margin-top: 6px; }
+.drvacts { margin: 4px 0 6px; display: flex; gap: 6px; }
+.drvacts button { padding: 3px 10px; font-size: 12px; }

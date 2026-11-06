@@ -32,6 +32,7 @@ import notify  # noqa: E402
 import restore  # noqa: E402
 import retention  # noqa: E402
 import treeexport  # noqa: E402
+import upload_plan  # noqa: E402
 import uploader as uploader_mod  # noqa: E402
 import version  # noqa: E402
 import watcher as watcher_mod  # noqa: E402
@@ -119,7 +120,8 @@ def _fs(location, op, **kwargs):
     if not location:
         return localfs.OPS[op](**kwargs)
     return hub.call(location, op, kwargs,
-                    timeout=180 if op in ("orphans", "delete_orphans", "verify_downloads") else 30)
+                    timeout=300 if op == "plan_upload"
+                    else 180 if op in ("orphans", "delete_orphans", "verify_downloads") else 30)
 
 
 @app.errorhandler(localfs.FsError)
@@ -253,7 +255,7 @@ def api_status():
         "watch_dirs": config.WATCH_DIRS,
         "canary": config.CANARY_NAME,
         "canary_buckets": config.CANARY_BUCKETS,
-        "auto_upload": config.AUTO_UPLOAD,
+        "auto_upload": drives.auto_upload(""),
         "notify_enabled": config.NOTIFY,
         "notify_ready": notify.config_problem() is None,
         "email_to": config.EMAIL_TO,
@@ -350,22 +352,41 @@ def api_browse():
                        path=request.args.get("path") or None))
 
 
+def _upload_bucket(data):
+    """The destination of a manual upload: explicit (the UI always sends it), or
+    the active bucket when omitted. Raises BucketError."""
+    requested = (data.get("bucket") or "").strip()
+    bucket = buckets_mod.check(requested) if requested else config.BUCKET
+    if not bucket:
+        raise buckets_mod.BucketError("no bucket set — pick one in Connection, or set "
+                                      "COLDVAULT_BUCKET")
+    return bucket
+
+
+@app.post("/api/upload/preview")
+def api_upload_preview():
+    """What Start upload would do with this selection: per file, uploads /
+    skipped / checked during upload / refused, by the uploader's own rules."""
+    data = request.get_json(force=True)
+    location = _location(data.get("location"))
+    try:
+        bucket = _upload_bucket(data)
+    except buckets_mod.BucketError as e:
+        return jsonify({"error": str(e)}), 400
+    plan = _fs(location, "plan_upload", path=data.get("path"), items=data.get("items"))
+    return jsonify(upload_plan.classify(bucket, (data.get("label") or "").strip(),
+                                        location, plan))
+
+
 @app.post("/api/upload")
 def api_upload():
     data = request.get_json(force=True)
     label = (data.get("label") or "").strip()
     location = _location(data.get("location"))
-
-    # The destination is explicit for a manual upload (the UI always sends it);
-    # omitting it falls back to the active bucket.
-    requested = (data.get("bucket") or "").strip()
     try:
-        bucket = buckets_mod.check(requested) if requested else config.BUCKET
+        bucket = _upload_bucket(data)
     except buckets_mod.BucketError as e:
         return jsonify({"error": str(e)}), 400
-    if not bucket:
-        return jsonify({"error": "no bucket set — pick one in Connection, or set "
-                                 "COLDVAULT_BUCKET"}), 400
 
     # Checked (and a selection reduced to its common folder) on the machine
     # that has the files.
@@ -767,6 +788,30 @@ def api_backup_settings():
 def api_agents():
     return jsonify({"agents": hub.listing(), "enabled": bool(config.AGENT_TOKEN),
                     "master": config.NAME})
+
+
+@app.post("/api/auto-upload")
+def api_auto_upload():
+    """Switch auto-upload of canary drives on or off for one machine."""
+    data = request.get_json(force=True) or {}
+    location = _location(data.get("location"))
+    drives.set_auto_upload(location, bool(data.get("enabled")))
+    return jsonify({"location": location or config.NAME,
+                    "enabled": drives.auto_upload(location)})
+
+
+@app.post("/api/drives/upload")
+def api_drive_upload_now():
+    """Upload a plugged-in canary drive now (one that is waiting)."""
+    data = request.get_json(force=True) or {}
+    location = _location(data.get("location"))
+    try:
+        sid = tracker.upload_now(location, (data.get("mount") or "").strip())
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify({"session_id": sid})
 
 
 @app.post("/api/agents/forget")

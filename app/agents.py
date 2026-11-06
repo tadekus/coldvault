@@ -24,6 +24,7 @@ from datetime import datetime
 
 import config
 import db
+import drives
 import version
 from logs import log_event
 
@@ -328,6 +329,7 @@ class Hub:
                         "seconds_ago": None if age == float("inf") else int(age),
                         "first_seen": a["first_seen"], "info": a["info"],
                         "drives": self.tracker.drives(a["name"]),
+                        "auto_upload": drives.auto_upload(a["name"]),
                         "work": db.location_activity(a["name"])})
         return out
 

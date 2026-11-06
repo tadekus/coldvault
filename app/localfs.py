@@ -8,6 +8,7 @@ import os
 
 import config
 import downloader
+import uploader
 import watcher
 from logs import log_event
 
@@ -82,7 +83,9 @@ def browse(path=None):
     return {"path": path, "parent": parent if allowed_path(parent) else None,
             "dirs": dirs, "files": files, "file_count": nfiles,
             "files_truncated": nfiles > len(files), "total_bytes": total_bytes,
-            "canary": canary}
+            "canary": canary,
+            # names an upload leaves out (COLDVAULT_EXCLUDES, the canary file)
+            "excluded": [n for n in dirs + [f["name"] for f in files] if uploader._left_out(n)]}
 
 
 def prepare_upload(path=None, items=None):
@@ -112,6 +115,30 @@ def prepare_upload(path=None, items=None):
     if not os.path.isdir(path):
         raise FsError("not a directory")
     return {"source": path, "items": None}
+
+
+PLAN_LIMIT = 200_000   # files per preview; a bigger selection is previewed in parts
+
+
+def plan_upload(path=None, items=None):
+    """What an upload of this selection would read, found by the uploader's own
+    scan — for the preview. Paths are relative to the session's source folder,
+    exactly as the uploader makes them into S3 keys."""
+    plan = prepare_upload(path, items)
+    src, skipped = plan["source"], []
+    files = (uploader.scan_items(plan["items"], skipped) if plan["items"]
+             else uploader.scan(src, skipped))
+    if len(files) > PLAN_LIMIT:
+        raise FsError(f"{len(files):,} files are too many to preview at once "
+                      f"(limit {PLAN_LIMIT:,}) — preview a smaller selection", 413)
+
+    def rel(p):
+        r = os.path.relpath(p.rstrip("/"), src).replace(os.sep, "/")
+        return r + "/" if p.endswith("/") else r
+
+    return {"source": src, "items": plan["items"],
+            "files": [[rel(p), size, mtime] for p, size, mtime in files],
+            "excluded": [rel(p) for p in skipped[:500]], "excluded_count": len(skipped)}
 
 
 # ---- download side ----
@@ -229,6 +256,7 @@ OPS = {
     "browse_roots": browse_roots,
     "browse": browse,
     "prepare_upload": prepare_upload,
+    "plan_upload": plan_upload,
     "download_browse": download_browse,
     "plan_download": plan_download,
     "paths_exist": paths_exist,

@@ -67,33 +67,36 @@
     <div id="agentsInfo" class="muted">loading…</div>
   </div>
 
-  <div class="box">
+  <div class="box" id="manualUploadBox">
     <h3>Manual upload</h3>
     <div class="row">
       <label for="uploadFrom" class="muted">Upload from</label>
       <select id="uploadFrom" title="the machine that has the files"></select>
       <span id="uploadFromNote" class="muted" style="font-size:12px"></span>
     </div>
-    <h4>Accessible locations</h4>
-    <div id="browseRoots" class="browse muted">loading…</div>
+    <div class="muted" style="font-size:12px;margin:6px 0">
+      Open folders with ▸ and tick what to upload — a ticked folder takes everything
+      inside it. <b>Preview</b> shows, file by file, what would upload and what would be
+      skipped, before anything is sent.</div>
+    <div id="upTree" class="uptree muted">loading…</div>
+    <div class="row" id="uploadSelBar">
+      <span id="uploadSelCount" class="muted">nothing ticked</span>
+      <button id="btnClearSel" class="secondary">Clear selection</button>
+      <span id="uploadSelHint" class="muted" style="font-size:12px"></span>
+    </div>
     <div class="row">
-      <input id="uploadPath" placeholder="pick a location above, or type a path" style="flex:2">
+      <input id="uploadPath" placeholder="open folder (uploaded whole when nothing is ticked) — or type a path and press Open" style="flex:2">
+      <button id="btnBrowse" class="secondary">Open</button>
       <input id="uploadLabel" placeholder="label (optional, default = folder name)" style="flex:1">
-      <button id="btnBrowse" class="secondary">Browse</button>
     </div>
     <div class="row">
       <label for="uploadBucket" class="muted" style="font-size:12px">Upload to bucket</label>
       <select id="uploadBucket" title="destination bucket for this upload" style="flex:1"></select>
+      <button id="btnUpPreview" class="secondary">Preview</button>
       <button id="btnUpload">Start upload</button>
       <span id="uploadCanary" class="muted" style="font-size:12px"></span>
     </div>
-    <div class="row" id="uploadSelBar" style="display:none">
-      <span id="uploadSelCount" class="muted">0 selected</span>
-      <button id="btnSelAllHere" class="secondary">Select all here</button>
-      <button id="btnClearSel" class="secondary">Clear selection</button>
-      <span id="uploadSelHint" class="muted"></span>
-    </div>
-    <div id="browseList"></div>
+    <div id="upPreview"></div>
   </div>
 </section>
 
