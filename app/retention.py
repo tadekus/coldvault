@@ -191,8 +191,11 @@ def unlock(mfa_code=None, purpose="delete"):
             "--role-session-name", f"coldvault-{purpose}-{config.NAME}"[:64],
             "--duration-seconds", str(config.DELETE_SESSION_SECONDS)]
     if config.DELETE_MFA_SERIAL:
-        code = (mfa_code or "").strip()
+        # Authenticator apps show "123 456"; accept it typed or pasted that way.
+        code = re.sub(r"[\s-]", "", mfa_code or "")
         if not re.fullmatch(r"\d{6}", code):
+            log_event("WARNING", "retention", f"delete role NOT unlocked ({purpose}): "
+                                              "no valid 6-digit code was entered")
             raise DeleteAuthError("enter the 6-digit code from your authenticator app")
         args += ["--serial-number", config.DELETE_MFA_SERIAL, "--token-code", code]
     try:

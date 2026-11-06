@@ -1144,9 +1144,36 @@ const canDeleteIn = b => trPerm[b] === true || !!deleteRole;
 // every other confirmation. Returns "" when no code is needed, null if cancelled.
 function askDeleteCode(what) {
   if (!deleteRole || !deleteRole.mfa) return "";
-  const code = prompt(`Unlocking the delete role for ${what}.\n\n`
-                    + `Enter the 6-digit code from your authenticator app:`, "");
-  return code === null ? null : code.trim();
+  let msg = `Last step: unlocking the delete role for ${what}.\n\n`
+          + `Enter the 6-digit code from your authenticator app:`;
+  for (;;) {
+    const raw = prompt(msg, "");
+    if (raw === null) return null;
+    const code = raw.replace(/[\s-]/g, "");   // apps show "123 456"
+    if (/^\d{6}$/.test(code)) return code;
+    msg = `"${raw.trim()}" isn't a 6-digit code.\n\n`
+        + `Enter the 6 digits your authenticator app shows for ColdVault (spaces are fine):`;
+  }
+}
+
+// The typed confirmation before a delete. Says that the code is asked next, so
+// the code doesn't end up in this box.
+function askBucketName(bucket) {
+  const next = deleteRole && deleteRole.mfa
+    ? "\n\n(The code from your authenticator app is asked after this.)" : "";
+  return prompt(`This is irreversible.\n\nType the bucket name, ${bucket}, to confirm:${next}`, "");
+}
+
+function bucketNameMismatch(typed) {
+  return /^[\d\s-]{6,9}$/.test(typed.trim())
+    ? "that looks like your authenticator code, but this box needs the bucket name (the code is asked next)"
+    : "the bucket name didn't match";
+}
+
+// A delete that didn't happen must be impossible to miss.
+function deleteFailed(el, msg) {
+  el.innerHTML = `<span style="color:var(--err)">✘ ${esc(msg)} — nothing was deleted</span>`;
+  alert(`Nothing was deleted.\n\n${msg}`);
 }
 
 // The selection grouped per bucket: Map(bucket -> {prefixes, keys}).
@@ -1475,6 +1502,7 @@ $("#btnTrDelete").onclick = async () => {
   if (groups.size !== 1) return alert("Delete works on one bucket at a time — untick the others first");
   const [[bucket, g]] = groups;
   $("#trResult").textContent = "checking what that covers…";
+  await trPermission(bucket);   // so we know whether the delete role needs a code
   let p;
   try {
     p = await api("/api/retention/preview", { body: { bucket, prefixes: g.prefixes, keys: g.keys } });
@@ -1484,9 +1512,9 @@ $("#btnTrDelete").onclick = async () => {
   if (p.versioning === "Enabled") warn += `\n\nBucket versioning is ENABLED: this adds delete markers; versions keep costing until purged.`;
   warn += `\n\nThis cannot be undone.`;
   if (!confirm(warn)) { $("#trResult").textContent = ""; return; }
-  const typed = prompt("Type the bucket name to confirm:", "");
-  if (typed === null) return;
-  if (typed.trim() !== bucket) { $("#trResult").textContent = "✘ the name didn't match — nothing deleted"; return; }
+  const typed = askBucketName(bucket);
+  if (typed === null) { $("#trResult").textContent = "cancelled — nothing deleted"; return; }
+  if (typed.trim() !== bucket) return deleteFailed($("#trResult"), bucketNameMismatch(typed));
   const code = askDeleteCode(`${p.count} object(s) in ${bucket}`);
   if (code === null) { $("#trResult").textContent = "cancelled — nothing deleted"; return; }
   $("#trResult").textContent = "deleting…";
@@ -1500,7 +1528,7 @@ $("#btnTrDelete").onclick = async () => {
       + (r.early ? ` <span class="muted">· ${r.early} within the minimum duration (still billed)</span>` : "");
     trPrefixes.clear(); trKeys.clear();
     loadTree();
-  } catch (e) { $("#trResult").textContent = "✘ " + e.message; }
+  } catch (e) { deleteFailed($("#trResult"), e.message); }
 };
 
 /* ---------- retention / deletion ---------- */
@@ -1636,10 +1664,10 @@ async function rtDelete({ due }) {
   if (!canDeleteIn(bucket) && trPerm[bucket] === false)
     return alert(`This IAM user cannot delete from ${bucket}, and no delete role is set up.`);
   if (!confirm(`PERMANENTLY DELETE ${what} from S3?${early}\n\nThis cannot be undone.`)) return;
-  const typed = prompt(`This is irreversible.\n\nType the bucket name (${bucket}) to confirm:`, "");
-  if (typed === null) return;
+  const typed = askBucketName(bucket);
   const el = due ? $("#rtDueResult") : $("#rtDeleteResult");
-  if (typed.trim() !== bucket) { el.textContent = "✘ the name didn't match — nothing deleted"; return; }
+  if (typed === null) { el.textContent = "cancelled — nothing deleted"; return; }
+  if (typed.trim() !== bucket) return deleteFailed(el, bucketNameMismatch(typed));
   const code = askDeleteCode(what);
   if (code === null) { el.textContent = "cancelled — nothing deleted"; return; }
   el.textContent = "deleting…";
@@ -1655,7 +1683,7 @@ async function rtDelete({ due }) {
     rtLast = null;
     loadRetention(true);
     if (activeTab === "files") loadFiles();
-  } catch (e) { el.textContent = "✘ " + e.message; }
+  } catch (e) { deleteFailed(el, e.message); }
 }
 $("#btnRtDelete").onclick = () => rtDelete({ due: false });
 $("#btnRtDeleteDue").onclick = () => rtDelete({ due: true });

@@ -4,6 +4,23 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.19.4
+
+- **Fix: a delete from the Tree with the delete role could fail silently.** A
+  refused delete showed its reason only as small grey text under the toolbar and
+  wrote nothing to the log. Now every refused or failed delete, in the Tree and on
+  Retention:
+  - pops up "Nothing was deleted" with the reason, and shows it in red;
+  - writes a `delete refused …` or `delete role NOT unlocked …` line to the log
+    (never the code itself).
+- The authenticator code may be typed as the app shows it, `123 456` (spaces or
+  dashes are ignored). A code that isn't 6 digits is asked for again instead of
+  being sent.
+- The bucket-name prompt says that the code is asked next. A code typed into the
+  bucket-name box by mistake is recognised and explained.
+- The Tree's Delete waits for the bucket's permission check, so clicking it right
+  after ticking a file still asks for the code.
+
 ## 1.19.3
 
 - `.env.agent.example`: `COLDVAULT_MULTIPART_THRESHOLD_MB` is now **4096** (was 512).

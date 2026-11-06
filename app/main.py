@@ -688,19 +688,25 @@ def api_retention_delete():
     as a typed confirmation. Writes a tombstone + log line for every object."""
     data = request.get_json(force=True)
     bucket = (data.get("bucket") or "").strip() or config.BUCKET
+
+    def refuse(msg, status=400):
+        # Every refused delete leaves a trace in the log, not just in the browser.
+        log_event("WARNING", "retention", f"delete refused on s3://{bucket}: {msg}")
+        return jsonify({"error": msg}), status
+
     if bucket == "*":
-        return jsonify({"error": "delete works on one bucket at a time"}), 400
+        return refuse("delete works on one bucket at a time")
     if (data.get("confirm") or "").strip() != bucket:
-        return jsonify({"error": f"confirmation must equal the bucket name '{bucket}'"}), 400
+        return refuse(f"confirmation must equal the bucket name '{bucket}'")
     mode = "expiry" if data.get("due") else "manual"
     if data.get("due"):
         rows = db.files_due(bucket, db.now())
     else:
         rows, err = _retention_rows(data, bucket)
         if err:
-            return jsonify({"error": err}), 400
+            return refuse(err)
     if not rows:
-        return jsonify({"error": "nothing matched — refusing to delete"}), 400
+        return refuse("nothing matched — refusing to delete")
     try:
         # With a delete role configured, this is the only moment it is unlocked.
         creds = retention.unlock(data.get("mfa_code"))
