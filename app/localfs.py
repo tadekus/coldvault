@@ -120,14 +120,18 @@ def prepare_upload(path=None, items=None):
 PLAN_LIMIT = 200_000   # files per preview; a bigger selection is previewed in parts
 
 
-def plan_upload(path=None, items=None):
+def plan_upload(path=None, items=None, summary=False):
     """What an upload of this selection would read, found by the uploader's own
     scan — for the preview. Paths are relative to the session's source folder,
-    exactly as the uploader makes them into S3 keys."""
+    exactly as the uploader makes them into S3 keys. With `summary`, only the
+    totals (no file list, no size limit) — for Start upload's confirmation."""
     plan = prepare_upload(path, items)
     src, skipped = plan["source"], []
     files = (uploader.scan_items(plan["items"], skipped) if plan["items"]
              else uploader.scan(src, skipped))
+    if summary:
+        return {"source": src, "count": len(files), "bytes": sum(f[1] for f in files),
+                "excluded_count": len(skipped)}
     if len(files) > PLAN_LIMIT:
         raise FsError(f"{len(files):,} files are too many to preview at once "
                       f"(limit {PLAN_LIMIT:,}) — preview a smaller selection", 413)

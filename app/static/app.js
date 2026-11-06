@@ -63,6 +63,7 @@ setInterval(() => {
 // A location is "" for this master and an agent's name otherwise; the API
 // takes the same values.
 let masterName = "master";
+let globalPrefix = "";   // COLDVAULT_PREFIX, in front of every key
 const machine = loc => loc || masterName;
 let locationsCache = [];
 
@@ -87,6 +88,7 @@ async function loadDashboard() {
   try {
     const [st, stats] = await Promise.all([api("/api/status"), api("/api/stats")]);
     masterName = st.name || masterName;
+    globalPrefix = st.prefix || "";
     $("#watcherWhere").textContent = `— ${masterName}, this machine`;
     $("#bucketBadge").textContent = `s3://${st.bucket || "?"} · ${st.storage_class}`;
     $("#bucketBadge").dataset.bucket = st.bucket || "";
@@ -618,6 +620,11 @@ $("#btnBrowse").onclick = () => treeOpenAt($("#uploadPath").value);
 $("#uploadPath").addEventListener("keydown", e => { if (e.key === "Enter") treeOpenAt(e.target.value); });
 $("#uploadPath").addEventListener("input", updateUploadSel);
 $("#uploadLabel").addEventListener("input", upPreviewStale);
+$("#uploadPrefix").addEventListener("input", () => {
+  try { localStorage.setItem("cv.uploadPrefix", $("#uploadPrefix").value); } catch (e) { /* private mode */ }
+  upPreviewStale();
+});
+try { $("#uploadPrefix").value = localStorage.getItem("cv.uploadPrefix") || ""; } catch (e) { /* ignore */ }
 
 $("#btnClearSel").onclick = () => { uploadSel.clear(); syncChecks(); };
 
@@ -683,13 +690,42 @@ function upRequest() {
   const bucket = $("#uploadBucket").value;
   const location = locOf("#uploadFrom");
   if (!bucket || bucket === OTHER_BUCKET) throw new Error("Pick the bucket this upload should go to");
-  if (uploadSel.size) return { items: [...uploadSel.keys()].sort(), label, bucket, location };
+  const prefix = $("#uploadPrefix").value.trim();
+  if (uploadSel.size) return { items: [...uploadSel.keys()].sort(), prefix, label, bucket, location };
   const path = $("#uploadPath").value.trim();
   if (!path) throw new Error("Tick files or folders, or open a folder to upload it whole");
-  return { path, label, bucket, location };
+  return { path, prefix, label, bucket, location };
+}
+
+// The folder the server will make keys relative to (as prepare_upload does):
+// a single ticked folder itself, else the common parent of what's ticked.
+function upSource(body) {
+  if (body.path) return body.path;
+  const items = body.items;
+  if (items.length === 1)
+    return uploadSel.get(items[0]).type === "dir" ? items[0] : items[0].replace(/\/[^/]*$/, "");
+  const segs = items.map(p => p.split("/"));
+  const common = [];
+  for (let i = 0; segs.every(s => i < s.length - 1 && s[i] === segs[0][i]); i++) common.push(segs[0][i]);
+  return common.join("/") || "/";
+}
+
+function upKeyStart(body) {
+  const clean = v => (v || "").split("/").map(x => x.trim()).filter(Boolean);
+  const label = clean(body.label).length ? clean(body.label)
+    : [upSource(body).replace(/\/+$/, "").split("/").pop() || "upload"];
+  return [globalPrefix, ...clean(body.prefix), ...label].filter(Boolean).join("/") + "/";
+}
+
+function upShowKeys() {
+  let body = null;
+  try { body = upRequest(); } catch (e) { /* incomplete */ }
+  $("#uploadKeys").textContent = body
+    ? `keys will start with  s3://${body.bucket}/${upKeyStart(body)}…` : "";
 }
 
 function upPreviewStale() {
+  upShowKeys();
   const el = $("#upPreviewStale");
   if (!el) return;
   let cur = null;
@@ -714,7 +750,7 @@ function renderUpPreview(r) {
       ${g.more ? `<div class="muted" style="font-size:12px">… and ${g.more.toLocaleString()} more</div>` : ""}
     </details>`;
   $("#upPreview").innerHTML = `<div class="box uppreview">
-    <h4>Preview · ${esc(r.location)}: ${esc(r.source)} → s3://${esc(r.bucket)}/${esc(r.key_prefix)}…</h4>
+    <h4>Preview · ${esc(r.location)}: ${esc(r.source)} → s3://${esc(r.bucket)}/${esc(r.key_prefix)}/…</h4>
     <div class="upsum">
       <div><b style="color:var(--ok)">Uploads</b> ${upCount(r.uploads)}</div>
       ${r.maybe.count ? `<div><b style="color:var(--warn)">Checked during upload</b> ${upCount(r.maybe)}
@@ -757,17 +793,40 @@ $("#btnUpPreview").onclick = async () => {
 $("#btnUpload").onclick = async () => {
   let body;
   try { body = upRequest(); } catch (e) { return alert(e.message); }
-  const dest = `\n\nFrom: ${machine(body.location)}\nDestination: s3://${body.bucket}${body.label ? "/" + body.label : ""}`;
   let what;
   if (body.items) {
     const dirs = body.items.filter(p => uploadSel.get(p).type === "dir").length;
-    what = `Upload ${body.items.length} ticked item(s) (${dirs} folder(s), ${body.items.length - dirs} file(s))?`;
+    what = `${dirs ? `${dirs} ticked folder(s)` : ""}${dirs && body.items.length - dirs ? " + " : ""}`
+         + `${body.items.length - dirs ? `${body.items.length - dirs} ticked file(s)` : ""}`;
   } else {
-    what = `Upload the entire folder ${body.path}?`;
+    what = `the whole folder ${body.path}`;
   }
-  const pv = $("#upPreview .uppreview") && upPreviewFor === JSON.stringify(body)
-    ? `\n\nPreview: ${$("#upPreview .upsum").innerText.replace(/\n+/g, " · ")}` : "";
-  if (!confirm(what + dest + pv)) return;
+  // The real numbers: from a current preview, or counted now on the machine.
+  let totals;
+  if ($("#upPreview .uppreview") && upPreviewFor === JSON.stringify(body)) {
+    totals = $("#upPreview .upsum").innerText.replace(/\n+/g, "\n");
+  } else {
+    $("#btnUpload").disabled = true;
+    $("#upPreview").innerHTML = `<div class="muted">counting the files on ${esc(machine(body.location))}…
+      (a large array can take a minute)</div>`;
+    try {
+      const c = await api("/api/upload/count", { body });
+      totals = `${c.count.toLocaleString()} file(s) · ${fmtBytes(c.bytes)}`
+        + (c.excluded_count ? `  (+${c.excluded_count.toLocaleString()} excluded by name)` : "")
+        + `\nFiles already archived are skipped as it goes.`;
+      body._keys = `s3://${c.bucket}/${c.key_prefix}/`;
+    } catch (e) {
+      $("#upPreview").innerHTML = "";
+      $("#btnUpload").disabled = false;
+      return alert("✘ " + e.message);
+    }
+    $("#upPreview").innerHTML = "";
+    $("#btnUpload").disabled = false;
+  }
+  const keys = body._keys || `s3://${body.bucket}/${upKeyStart(body)}`;
+  delete body._keys;
+  if (!confirm(`Upload ${what}?\n\nFrom: ${machine(body.location)}\n${totals}\n\n`
+             + `Destination: ${keys}…`)) return;
   try {
     const r = await api("/api/upload", { body });
     alert(`Upload session #${r.session_id} queued on ${r.location} → s3://${r.bucket}`);
@@ -1021,9 +1080,26 @@ async function loadSessions() {
       <td class="num">${s.skipped_files}</td>
       <td class="num" ${s.failed_files ? 'style="color:var(--err)"' : ""}>${s.failed_files}</td>
       <td class="mono">${esc(s.started_at || "")}</td>
+      <td>${["queued", "scanning", "running"].includes(s.status)
+        ? `<button class="secondary sessStop" data-id="${s.id}" data-where="${esc(machine(s.location))}"
+             title="start no new file; a large file in progress is abandoned cleanly">Stop</button>` : ""}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="12" class="muted" style="padding:20px">no sessions yet</td></tr>`;
+  }).join("") || `<tr><td colspan="13" class="muted" style="padding:20px">no sessions yet</td></tr>`;
 }
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest(".sessStop");
+  if (!b) return;
+  if (!confirm(`Stop upload session #${b.dataset.id} on ${b.dataset.where}?\n\n`
+             + `Nothing new starts. A large file being uploaded is abandoned cleanly between `
+             + `parts (nothing is left half-uploaded in S3); small files in flight finish.\n\n`
+             + `Files already archived stay. Re-running the same upload later skips them.`)) return;
+  b.disabled = true;
+  try {
+    await api(`/api/sessions/${b.dataset.id}/stop`, { method: "POST" });
+  } catch (err) { alert("✘ " + err.message); }
+  loadSessions();
+});
 
 /* ---------- restores ---------- */
 async function loadRestores() {

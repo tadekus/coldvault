@@ -47,6 +47,9 @@ down = downloader_mod.Downloader()
 
 def _after_upload(sid, trigger):
     """A session this master ran itself has finished."""
+    s = db.get_session(sid)
+    if not s or s["status"] == "stopped":
+        return
     if trigger == "canary":
         eject.after_session(db.get_session(sid), busy=up.queue_size() > 0)
         if config.NOTIFY:
@@ -57,7 +60,7 @@ def _after_agent_upload(sid):
     """A session an agent ran has finished. Unmounting is the agent's own
     business (its drive, its host); the report email is the master's."""
     s = db.get_session(sid)
-    if s and s["trigger"] == "canary" and config.NOTIFY:
+    if s and s["trigger"] == "canary" and s["status"] != "stopped" and config.NOTIFY:
         notify.notify_upload_complete(sid)
 
 
@@ -120,7 +123,7 @@ def _fs(location, op, **kwargs):
     if not location:
         return localfs.OPS[op](**kwargs)
     return hub.call(location, op, kwargs,
-                    timeout=300 if op == "plan_upload"
+                    timeout=600 if op == "plan_upload"
                     else 180 if op in ("orphans", "delete_orphans", "verify_downloads") else 30)
 
 
@@ -352,6 +355,19 @@ def api_browse():
                        path=request.args.get("path") or None))
 
 
+def _manual_label(data, source):
+    """Where a manual upload's keys start (after COLDVAULT_PREFIX): the optional
+    prefix — e.g. the film — then the label, which is the folder's own name
+    unless one is typed. "Film/Day01" and "Film" + "Day01" are the same."""
+    def parts(v):
+        p = [x.strip() for x in str(v or "").replace("\\", "/").split("/")]
+        if any(x in (".", "..") for x in p):
+            raise ValueError("a prefix or label can't contain '.' or '..' as a folder name")
+        return [x for x in p if x]
+    label = parts(data.get("label")) or [os.path.basename(source.rstrip("/")) or "upload"]
+    return "/".join(parts(data.get("prefix")) + label)
+
+
 def _upload_bucket(data):
     """The destination of a manual upload: explicit (the UI always sends it), or
     the active bucket when omitted. Raises BucketError."""
@@ -374,14 +390,37 @@ def api_upload_preview():
     except buckets_mod.BucketError as e:
         return jsonify({"error": str(e)}), 400
     plan = _fs(location, "plan_upload", path=data.get("path"), items=data.get("items"))
-    return jsonify(upload_plan.classify(bucket, (data.get("label") or "").strip(),
-                                        location, plan))
+    try:
+        label = _manual_label(data, plan["source"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(upload_plan.classify(bucket, label, location, plan))
+
+
+@app.post("/api/upload/count")
+def api_upload_count():
+    """Files and bytes a manual upload would send (before skipping anything
+    already archived), and where its keys start — for Start upload's
+    confirmation. Counted on the machine that has the files."""
+    data = request.get_json(force=True)
+    location = _location(data.get("location"))
+    try:
+        bucket = _upload_bucket(data)
+    except buckets_mod.BucketError as e:
+        return jsonify({"error": str(e)}), 400
+    plan = _fs(location, "plan_upload", path=data.get("path"), items=data.get("items"),
+               summary=True)
+    try:
+        label = _manual_label(data, plan["source"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(dict(plan, bucket=bucket, label=label, location=location or config.NAME,
+                        key_prefix=uploader_mod.make_key(label, "")))
 
 
 @app.post("/api/upload")
 def api_upload():
     data = request.get_json(force=True)
-    label = (data.get("label") or "").strip()
     location = _location(data.get("location"))
     try:
         bucket = _upload_bucket(data)
@@ -391,6 +430,10 @@ def api_upload():
     # Checked (and a selection reduced to its common folder) on the machine
     # that has the files.
     plan = _fs(location, "prepare_upload", path=data.get("path"), items=data.get("items"))
+    try:
+        label = _manual_label(data, plan["source"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     sid = _start_session(location, plan["source"], label, "manual",
                          items=plan["items"], bucket=bucket)
     return jsonify({"session_id": sid, "bucket": bucket, "location": location or config.NAME})
@@ -788,6 +831,21 @@ def api_backup_settings():
 def api_agents():
     return jsonify({"agents": hub.listing(), "enabled": bool(config.AGENT_TOKEN),
                     "master": config.NAME})
+
+
+@app.post("/api/sessions/<int:sid>/stop")
+def api_session_stop(sid):
+    """Stop an upload session — here or on an agent. Files in flight finish or,
+    if large, are abandoned between parts; nothing new starts."""
+    s = db.stop_session(sid)
+    if not s:
+        return jsonify({"error": f"session #{sid} isn't queued or running"}), 409
+    where = s["location"] or config.NAME
+    log_event("WARNING", "upload", f"Session #{sid} on {where}: STOP requested "
+                                   f"({s['done_files']} uploaded, {s['skipped_files']} skipped so far)")
+    if s["location"]:
+        hub.wake(s["location"])
+    return jsonify({"ok": True, "was": s["status"], "location": where})
 
 
 @app.post("/api/auto-upload")

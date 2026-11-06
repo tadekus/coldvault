@@ -4,6 +4,26 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.21.0
+
+- **Stop an upload:** a **Stop** button in Sessions, for this machine and for agents.
+  - A queued session never starts; a running one starts no new file.
+  - A large file in progress is abandoned between parts and its multipart upload is
+    aborted, so nothing is left half-uploaded or billed in S3.
+  - Verified files stay, and re-running the upload skips them.
+  - The status is `stopped`, and it stays so even if the machine reports back late.
+  - No report email or eject follows a stopped session.
+  - A canary drive whose upload was stopped isn't restarted after a restart.
+- **Prefix for manual uploads,** for example the film's name, in front of the folder
+  name: `Hotel Example/RAID01/…`. It may contain `/`, and `.`/`..` are refused.
+  - A line under the field shows where the keys will start. The browser remembers
+    the prefix.
+  - The label still replaces the folder's own name.
+- **Start upload's confirmation shows the real numbers.** It counts the files and
+  bytes on the machine that has them, or uses a current preview's totals, and shows
+  the full destination including the prefix.
+- Preview: a file whose earlier upload was stopped or failed says why.
+
 ## 1.20.0
 
 - **Manual upload: a tree with a preview.**

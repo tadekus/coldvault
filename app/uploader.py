@@ -17,6 +17,12 @@ from logs import log_event
 from store import db
 
 READ_BLOCK = 8 * 1024 * 1024
+ACTIVE = ("queued", "scanning", "running")   # session states that may still upload
+STOP_CHECK_SECONDS = 5
+
+
+class SessionStopped(Exception):
+    """The session was stopped (by hand, or failed by the master) mid-file."""
 
 
 def _excluded(name):
@@ -130,6 +136,7 @@ class Uploader:
         self.q = queue.Queue()
         self.current_session = None
         self._stopped = set()   # sessions the master no longer has running
+        self._checked = {}      # sid -> monotonic time of the last stop check
         self._mstats = {}       # sid -> {manifest_state: count}
         self._mlock = threading.Lock()
         # Optional callback(sid, trigger) run after a session finishes; set by main.
@@ -182,12 +189,32 @@ class Uploader:
 
     # ---- session ----
 
+    def _should_stop(self, sid, now=False):
+        """Has the session been stopped? Asks the database at most every few
+        seconds (on an agent that's a call to the master), or right away."""
+        if sid in self._stopped:
+            return True
+        t = time.monotonic()
+        if not now and t - self._checked.get(sid, 0) < STOP_CHECK_SECONDS:
+            return False
+        self._checked[sid] = t
+        s = db.get_session(sid)
+        if s and s["status"] in ACTIVE:
+            return False
+        self._stopped.add(sid)
+        return True
+
     def _run_session(self, sid):
         s = db.get_session(sid)
+        if not s or s["status"] not in ACTIVE:
+            log_event("INFO", "upload", f"Session #{sid} was stopped before it started")
+            return
         root, label, bucket = s["source"], s["label"], s["bucket"]
         sel = json.loads(s["items"]) if s.get("items") else None
         db.update_session(sid, status="scanning")
         files = scan_items(sel) if sel else scan(root)
+        if self._should_stop(sid, now=True):
+            return self._end_stopped(sid)
         total_bytes = sum(f[1] for f in files)
         db.update_session(sid, total_files=len(files), total_bytes=total_bytes, status="running")
         log_event("INFO", "upload",
@@ -210,13 +237,9 @@ class Uploader:
             for f in futures:
                 f.result()
 
-        if sid in self._stopped:
-            self._stopped.discard(sid)
-            log_event("WARNING", "upload",
-                      f"Session #{sid} stopped: the master no longer has it running "
-                      f"(it was failed while this machine was out of touch) — re-run it; "
-                      f"verified files are skipped")
-            return
+        if sid in self._stopped or self._should_stop(sid, now=True):
+            return self._end_stopped(sid)
+        self._checked.pop(sid, None)
         s = db.get_session(sid)
         status = "done" if s["failed_files"] == 0 else "done_with_errors"
         db.update_session(sid, status=status, finished_at=db.now())
@@ -232,6 +255,23 @@ class Uploader:
                       f"{ms.get('mismatch', 0)} mismatch, {ms.get('not_in_manifest', 0)} not in manifest, "
                       f"{ms.get('algo_unsupported', 0)} unsupported algorithm "
                       f"({len(m_found)} manifest file(s))")
+
+    def _end_stopped(self, sid):
+        self._stopped.discard(sid)
+        self._checked.pop(sid, None)
+        with self._mlock:
+            self._mstats.pop(sid, None)
+        s = db.get_session(sid) or {}
+        if s.get("status") == "stopped":
+            log_event("WARNING", "upload",
+                      f"Session #{sid} stopped by hand: {s.get('done_files', 0)} uploaded, "
+                      f"{s.get('skipped_files', 0)} skipped — re-run it to continue; "
+                      f"verified files are skipped")
+        else:
+            log_event("WARNING", "upload",
+                      f"Session #{sid} stopped: the master no longer has it running "
+                      f"(it was failed while this machine was out of touch) — re-run it; "
+                      f"verified files are skipped")
 
     # ---- single file ----
 
@@ -264,7 +304,7 @@ class Uploader:
                           f"#{c['holder']} on {c['location'] or 'the master'}")
                 waited = True
             time.sleep(10)
-            if sid in self._stopped:
+            if self._should_stop(sid):
                 return False
             cur = db.get_file(bucket, key)
             if sha_hex and cur and cur["status"] == "verified" and cur["sha256"] == sha_hex:
@@ -274,7 +314,7 @@ class Uploader:
                 return False
 
     def _upload_one(self, sid, bucket, root, label, path, size, mtime, m_entries=None):
-        if sid in self._stopped:
+        if self._should_stop(sid):
             return
         rel = os.path.relpath(path, root).replace(os.sep, "/")
         key = make_key(label, rel)
@@ -367,6 +407,11 @@ class Uploader:
                       f"verified: s3://{bucket}/{key} ({size:,} bytes in {elapsed:.1f}s, "
                       f"{fmt_speed(size / elapsed)}, sha256={hex_sha[:16]}…"
                       + (f", manifest {m_state}" if m_state and m_state != "not_in_manifest" else "") + ")")
+        except SessionStopped:
+            # Not a failure: the upload was abandoned on purpose, and its
+            # multipart upload aborted. The next run uploads this file again.
+            db.upsert_file(bucket, key, status="failed", error="upload stopped before it finished")
+            log_event("INFO", "upload", f"stopped mid-file (nothing left behind in S3): s3://{bucket}/{key}")
         except Exception as e:
             # Only mark the index row failed if this session owns it: a read
             # error here mustn't turn another session's verified object into
@@ -444,6 +489,8 @@ class Uploader:
                 with open(path, "rb") as f:
                     part_no = 0
                     while True:
+                        if self._should_stop(sid):
+                            raise SessionStopped()
                         part_no += 1
                         sem.acquire()
                         ph = hashlib.sha256()

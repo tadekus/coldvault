@@ -87,8 +87,14 @@
     <div class="row">
       <input id="uploadPath" placeholder="open folder (uploaded whole when nothing is ticked) — or type a path and press Open" style="flex:2">
       <button id="btnBrowse" class="secondary">Open</button>
-      <input id="uploadLabel" placeholder="label (optional, default = folder name)" style="flex:1">
     </div>
+    <div class="row">
+      <input id="uploadPrefix" placeholder="prefix (optional) — e.g. the film: Hotel Example"
+             title="put in front of every key of this upload; may contain / for more levels" style="flex:1">
+      <input id="uploadLabel" placeholder="label (optional, default = folder name)"
+             title="replaces the uploaded folder's own name in the keys" style="flex:1">
+    </div>
+    <div id="uploadKeys" class="muted mono" style="font-size:12px;margin:2px 0 6px;word-break:break-all"></div>
     <div class="row">
       <label for="uploadBucket" class="muted" style="font-size:12px">Upload to bucket</label>
       <select id="uploadBucket" title="destination bucket for this upload" style="flex:1"></select>
@@ -184,7 +190,7 @@
     <table id="sessionsTable">
       <thead><tr>
         <th>#</th><th>Machine</th><th>Source</th><th>Bucket</th><th>Label</th><th>Trigger</th><th>Status</th>
-        <th>Progress</th><th>Uploaded</th><th>Skipped</th><th>Failed</th><th>Started</th>
+        <th>Progress</th><th>Uploaded</th><th>Skipped</th><th>Failed</th><th>Started</th><th></th>
       </tr></thead>
       <tbody></tbody>
     </table>

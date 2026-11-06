@@ -49,7 +49,7 @@ def _group(r, size, mtime, location, dup_key, key):
     if r and r["status"] == "remote":
         return "changed", "in the bucket, but never uploaded and verified by ColdVault"
     if r:
-        return "retry", r["status"]
+        return "retry", r.get("error") or r["status"]
     if dup_key is not None and dup_key != key:
         return "dup", f"same size as {dup_key}"
     return "new", None

@@ -131,10 +131,13 @@ class DriveTracker:
         if first:
             # Only the local DB is read here, so don't spend a head-bucket call.
             bucket = info["bucket"] or config.BUCKET
-            if db.latest_session_status(mount, bucket, location) == "done":
+            last = db.latest_session_status(mount, bucket, location)
+            if last in ("done", "stopped"):
                 log_event("INFO", "watcher",
-                          f"drive already uploaded to s3://{bucket} (last session done), "
-                          f"still mounted at {mount}{where} — not re-uploading; replug to re-scan")
+                          f"drive at {mount}{where}: last upload to s3://{bucket} "
+                          + ("done — not re-uploading; replug or Upload again to re-scan"
+                             if last == "done" else
+                             "was stopped by hand — not restarting it; use Upload again"))
                 return {"label": info["label"], "bucket": bucket, "session_id": None,
                         "canary_bucket": info["bucket"], "detected_at": db.now(),
                         "error": None, "seeded": True}

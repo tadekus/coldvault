@@ -351,8 +351,30 @@ def create_session(bucket, source, label, trigger, location="", items=None):
 
 
 def update_session(sid, **kw):
+    # A session stopped by hand stays "stopped": the machine running it may
+    # still report scanning/running/done before it notices.
+    if kw.get("status") not in (None, "stopped"):
+        cur = _row("SELECT status FROM sessions WHERE id=?", (sid,))
+        if cur and cur["status"] == "stopped":
+            kw.pop("status")
+            kw.pop("finished_at", None)
+    if not kw:
+        return
     cols = ", ".join(f"{k}=?" for k in kw)
     _exec(f"UPDATE sessions SET {cols} WHERE id=?", (*kw.values(), sid))
+
+
+def stop_session(sid):
+    """Stop an upload session by hand: a queued one never starts; a running one
+    starts no new file, and a large file in progress is abandoned between parts
+    (its multipart upload aborted). Files already verified stay. Returns the
+    session as it was, or None if it isn't queued or running."""
+    with _lock:
+        s = get_session(sid)
+        if not s or s["status"] not in ACTIVE:
+            return None
+        _exec("UPDATE sessions SET status='stopped', finished_at=? WHERE id=?", (now(), sid))
+        return s
 
 
 def bump_session(sid, done=0, skipped=0, failed=0, bytes_done=0):
@@ -459,7 +481,7 @@ def preview_rows(bucket, keys):
     out, keys = {}, list(keys)
     for i in range(0, len(keys), 500):
         chunk = keys[i:i + 500]
-        for r in _rows(f"""SELECT f.key, f.status, f.size, f.mtime, f.session_id,
+        for r in _rows(f"""SELECT f.key, f.status, f.error, f.size, f.mtime, f.session_id,
                                   s.location AS s_location, s.status AS s_status
                            FROM files f LEFT JOIN sessions s ON s.id = f.session_id
                            WHERE f.bucket=? AND f.key IN ({','.join('?' * len(chunk))})""",

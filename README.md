@@ -589,8 +589,33 @@ a bigger drive in parts.
 Keys mirror the structure under the **common parent** of your selection, so selecting a
 folder produces exactly the same keys as a whole-folder upload of it, and picking two
 day folders keeps them both under the project (`Project/Day01/…`, `Project/Day02/…`).
-The label field overrides the top-level prefix. Already-verified and duplicate content
-is skipped as usual.
+Already-verified and duplicate content is skipped as usual.
+
+**Prefix and label** decide where the keys start:
+
+| Prefix | Label | Ticked folder | Keys |
+|---|---|---|---|
+| — | — | `RAID01` | `RAID01/…` |
+| `Hotel Example` | — | `RAID01` | `Hotel Example/RAID01/…` |
+| `Hotel Example/RAW` | — | `RAID01` | `Hotel Example/RAW/RAID01/…` |
+| `Hotel Example` | `Disk01` | `RAID01` | `Hotel Example/Disk01/…` |
+
+The **prefix** (e.g. the film) goes in front; the **label** replaces the folder's own
+name. The line under the fields shows where the keys will start, the prefix is
+remembered in the browser, and `COLDVAULT_PREFIX` (if set) still comes first.
+**Start upload** counts the selection on the machine that has it and confirms with the
+real numbers — *1 ticked folder · 48,211 files · 50.2 TB → s3://bucket/Hotel
+Example/RAID01/…* — or with a current preview's totals.
+
+### Stopping an upload
+
+**Sessions** → **Stop** on a queued or running session, on this machine or an agent. A
+queued session never starts; a running one starts no new file. A large file in progress
+is abandoned **between parts** and its multipart upload aborted, so nothing is left
+half-uploaded (and billed) in S3; a small file in flight finishes. Everything already
+verified stays — run the same upload again later and it carries on, skipping those.
+A canary drive whose upload was stopped isn't restarted automatically after a restart;
+use **Upload again** on the Dashboard.
 
 ## Restoring
 
