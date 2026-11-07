@@ -45,6 +45,11 @@ up = uploader_mod.Uploader()
 down = downloader_mod.Downloader()
 
 
+# Sessions followed by an audit + report email (when COLDVAULT_NOTIFY is on):
+# drive auto-uploads and uploads started by hand from the Upload tab.
+EMAIL_TRIGGERS = ("canary", "manual")
+
+
 def _after_upload(sid, trigger):
     """A session this master ran itself has finished."""
     s = db.get_session(sid)
@@ -52,15 +57,15 @@ def _after_upload(sid, trigger):
         return
     if trigger == "canary":
         eject.after_session(db.get_session(sid), busy=up.queue_size() > 0)
-        if config.NOTIFY:
-            notify.notify_upload_complete(sid)
+    if trigger in EMAIL_TRIGGERS and config.NOTIFY:
+        notify.notify_upload_complete(sid)
 
 
 def _after_agent_upload(sid):
     """A session an agent ran has finished. Unmounting is the agent's own
     business (its drive, its host); the report email is the master's."""
     s = db.get_session(sid)
-    if s and s["trigger"] == "canary" and s["status"] != "stopped" and config.NOTIFY:
+    if s and s["trigger"] in EMAIL_TRIGGERS and s["status"] != "stopped" and config.NOTIFY:
         notify.notify_upload_complete(sid)
 
 

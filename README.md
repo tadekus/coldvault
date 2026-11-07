@@ -967,11 +967,14 @@ COLDVAULT_EMAIL_FROM=ColdVault <coldvault@your-verified-domain.com>
 COLDVAULT_EMAIL_TO=you@example.com          # comma-separate for several
 ```
 
-With `COLDVAULT_NOTIFY=true`, every watcher/canary upload is followed by a bucket audit
-and a report email (subject notes whether the audit was **OK** or **found issues**, and
-issues are listed in the body). Manual uploads don't email.
+With `COLDVAULT_NOTIFY=true`, every finished upload session — drive auto-upload or a
+manual upload from the Upload tab, on the master or on an agent — is followed by a bucket
+audit and a report email. The subject says whether any files failed and whether the audit
+was **OK** or **found issues**; the body names the machine, label, prefix and counts, and
+lists any issues. A stopped session sends nothing. Email is always sent by the master, so
+these settings belong in the master's `.env`, not an agent's.
 
-The **Email notifications** box on the dashboard also lets you **Email an audit report
+**Settings → Email notifications** also lets you **Email an audit report
 on demand** (runs an audit now and mails it) and **Send a test email** to verify the
 setup. The sender address must be on a domain verified in your Resend account (or use
 `onboarding@resend.dev` for a quick test).

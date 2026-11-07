@@ -4,6 +4,15 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.25.0
+
+- **Report email after manual uploads too.** With `COLDVAULT_NOTIFY=true`, a manual
+  upload session (from the Upload tab, on the master or an agent) now ends with the
+  same bucket audit and report email as a drive auto-upload. Stopped sessions still
+  send nothing.
+- The report email says how the session started and on which machine, shows the
+  prefix, and the subject mentions failed files ("finished with N failed file(s)").
+
 ## 1.24.0
 
 - **Per-bucket region.**

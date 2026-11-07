@@ -93,7 +93,10 @@ def upload_report_html(session, audit):
     banner_bg, banner = ("#16351f", "✅ Audit OK — bucket matches the index") if ok \
         else ("#3a1f1c", "⚠️ Audit found issues — see below")
     rows = "".join([
+        _row("Started", ("Manual upload" if s.get("trigger") == "manual" else "Drive auto-upload")
+             + f' on {s.get("location") or config.NAME}'),
         _row("Drive / label", s.get("label") or "—"),
+        *([_row("Prefix", s["prefix"])] if s.get("prefix") else []),
         _row("Source", s.get("source") or "—"),
         _row("Bucket", f's3://{audit["bucket"]}'),
         _row("Uploaded this run", f'{s.get("done_files", 0)} file(s), {_fmt_bytes(s.get("done_bytes"))}'),
@@ -190,7 +193,9 @@ def notify_upload_complete(sid):
         report = audit_mod.run_audit(session.get("bucket") or config.BUCKET)
         status = "OK" if report["ok_status"] else "ISSUES FOUND"
         label = session.get("label") or "drive"
-        subject = f"ColdVault: {label} archived — audit {status}"
+        failed = session.get("failed_files") or 0
+        done = f"finished with {failed} failed file(s)" if failed else "archived"
+        subject = f"ColdVault: {label} {done} — audit {status}"
         send_email(subject, upload_report_html(session, report))
     except Exception as e:
         log_event("ERROR", "notify", f"post-upload audit/email failed for session #{sid}: {e}")
