@@ -4,6 +4,20 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.24.0
+
+- **Per-bucket region.**
+  - The master asks S3 for each bucket's region once (`head-bucket`), keeps it in
+    the database (`bucket_region:<name>` settings), and adds `--region` to every
+    `s3api` call that names the bucket. A bucket outside `AWS_DEFAULT_REGION`
+    therefore costs no redirect.
+  - Agents receive the list with their policy, so they need no extra AWS
+    permission.
+  - A bucket whose region isn't known yet still works through S3's redirect.
+  - Upload bucket pickers show each bucket's region.
+- README: "Buckets in other regions", including current Deep Archive prices per region
+  and why existing data isn't moved.
+
 ## 1.23.0
 
 - **Large files are read once, not twice.** Before uploading a file above the

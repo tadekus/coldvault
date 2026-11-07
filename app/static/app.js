@@ -679,8 +679,9 @@ async function loadUploadBuckets(select) {
     const r = await api("/api/buckets/known");
     const names = [...new Set([...(r.buckets || []), keep].filter(
       b => b && b !== OTHER_BUCKET))];
+    const reg = r.regions || {};
     sel.innerHTML = names.map(b =>
-      `<option value="${esc(b)}">s3://${esc(b)}${b === r.active ? " (active)" : ""}</option>`)
+      `<option value="${esc(b)}">s3://${esc(b)}${reg[b] ? ` · ${esc(reg[b])}` : ""}${b === r.active ? " (active)" : ""}</option>`)
       .join("") + `<option value="${OTHER_BUCKET}">other bucket…</option>`;
     sel.value = names.includes(keep) ? keep : (r.active || names[0] || "");
     loadPrefixes();

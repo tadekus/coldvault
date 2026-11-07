@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import shlex
 import subprocess
+import threading
 import time
 
 from logs import log_event
@@ -9,6 +11,51 @@ from logs import log_event
 
 class AwsError(Exception):
     pass
+
+
+# ---- per-bucket region ----
+# Every s3api call that names a bucket is sent straight to that bucket's
+# region (--region), so a bucket outside AWS_DEFAULT_REGION (e.g. a cheaper
+# Stockholm one next to Frankfurt ones) costs no redirect. On the master,
+# `lookup` (buckets.lookup_region) asks S3 once per bucket and keeps the
+# answer; agents get the master's map with their policy. A bucket whose region
+# isn't known yet still works: the CLI follows S3's redirect by itself.
+REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d+$")
+REGIONS = {}            # bucket -> region
+lookup = None           # master only: callable(bucket) -> region | None
+_looking = set()        # buckets whose lookup is running (its own call skips this)
+_rlock = threading.Lock()
+
+
+def set_regions(mapping):
+    """Merge {bucket: region} (e.g. from the master's policy)."""
+    with _rlock:
+        REGIONS.update({b: r for b, r in (mapping or {}).items()
+                        if isinstance(r, str) and REGION_RE.match(r)})
+
+
+def bucket_region(bucket):
+    """The bucket's region if known — looked up now on the master if not."""
+    r = REGIONS.get(bucket)
+    if r or not lookup or not bucket:
+        return r
+    with _rlock:
+        if bucket in _looking:
+            return None
+        _looking.add(bucket)
+    try:
+        return lookup(bucket)
+    finally:
+        with _rlock:
+            _looking.discard(bucket)
+
+
+def _with_region(args):
+    if not args or args[0] != "s3api" or "--region" in args or "--bucket" not in args:
+        return args
+    i = args.index("--bucket")
+    region = bucket_region(args[i + 1]) if i + 1 < len(args) else None
+    return (*args, "--region", region) if region else args
 
 
 def aws(*args, log=True, log_errors=True, timeout=None, creds=None):
@@ -22,7 +69,7 @@ def aws(*args, log=True, log_errors=True, timeout=None, creds=None):
     this one command as someone else (the delete role) instead of the everyday
     user. They go in the child's environment only — never on the command line,
     so never in a log."""
-    cmd = ["aws", *args, "--output", "json"]
+    cmd = ["aws", *_with_region(args), "--output", "json"]
     pretty = " ".join(shlex.quote(c) for c in cmd)
     env = None
     if creds:

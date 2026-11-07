@@ -73,6 +73,7 @@ def _start_session(location, source, label, trigger, items=None, bucket=None, pr
     if not location:
         return up.enqueue(source, label, trigger, items=items, bucket=bucket, prefix=prefix)
     bucket = bucket or config.BUCKET
+    awsapi.bucket_region(bucket)   # known before the agent's next check-in carries it
     label = label or os.path.basename(source.rstrip("/")) or "upload"
     sid = db.create_session(bucket, source, label, trigger, location=location, items=items,
                             prefix=prefix)
@@ -88,6 +89,9 @@ tracker = drives.DriveTracker(
                                                           bucket=bucket))
 watch = watcher_mod.Watcher(lambda found: tracker.update("", found))
 hub = agents_mod.Hub(tracker, _after_agent_upload)
+
+# Regions of the buckets met so far; new ones are looked up on first use.
+buckets_mod.load_regions()
 
 # A bucket picked in the UI is persisted in the DB and overrides the .env value
 _saved_bucket = db.get_setting("bucket")
@@ -305,7 +309,8 @@ def api_buckets_known():
     configured default, the canary allowlist and every bucket already indexed.
     (/api/buckets lists the whole account, which costs a list-buckets call.)"""
     return jsonify({"buckets": buckets_mod.known(), "active": config.BUCKET,
-                    "canary_buckets": buckets_mod.allowlist()})
+                    "canary_buckets": buckets_mod.allowlist(),
+                    "regions": buckets_mod.regions()})
 
 
 @app.post("/api/bucket")

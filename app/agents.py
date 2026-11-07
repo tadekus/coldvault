@@ -22,6 +22,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 
+import awsapi
 import config
 import db
 import drives
@@ -48,7 +49,9 @@ def policy():
     return {"prefix": config.PREFIX, "storage_class": config.STORAGE_CLASS,
             "dedupe": config.DEDUPE, "manifest_check": config.MANIFEST_CHECK,
             "manifest_exts": list(config.MANIFEST_EXTS), "excludes": list(config.EXCLUDES),
-            "canary": config.CANARY_NAME}
+            "canary": config.CANARY_NAME,
+            # bucket -> region, so the agent sends each request straight there
+            "bucket_regions": dict(awsapi.REGIONS)}
 
 
 def _age(ts):

@@ -280,6 +280,23 @@ role); with the CLI, repeat the `put-user-policy` / `put-role-policy` commands. 
 missing from `delete-role.json` shows in **Test delete role** as *"has no
 s3:DeleteObject on this bucket"*.
 
+### Buckets in other regions
+
+Buckets don't have to be in `AWS_DEFAULT_REGION`. Deep Archive costs differ a lot by
+region — at the time of writing $1.80 per TB-month in Frankfurt (`eu-central-1`) but
+$0.99 in Stockholm (`eu-north-1`) and Ireland (`eu-west-1`) — so a new bucket can go
+somewhere cheaper. Nothing to configure: the first time ColdVault uses a bucket, the
+master asks S3 for its region once (`head-bucket`), keeps the answer in its database,
+and from then on sends every request for that bucket straight there; agents receive
+the same list with their settings. The bucket pickers show each bucket's region
+(`s3://my-archive-bucket · eu-north-1`). A bucket whose region isn't known yet still
+works — S3 redirects the request and the CLI follows.
+
+Existing Deep Archive objects can't be moved to another region without restoring them
+(and paying the early-deletion charge for anything younger than 180 days), so a cheaper
+region is for **new** uploads: create the bucket there and add it as in *Adding a bucket
+later*.
+
 ### If something doesn't work
 
 | Symptom | Cause |

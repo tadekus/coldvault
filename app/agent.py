@@ -23,6 +23,7 @@ import uuid
 
 from flask import Flask, jsonify, request
 
+import awsapi
 import config
 import downloader
 import eject
@@ -136,6 +137,7 @@ class Agent:
         config.MANIFEST_EXTS = tuple(p.get("manifest_exts") or config.MANIFEST_EXTS)
         config.EXCLUDES = list(p.get("excludes") or config.EXCLUDES)
         config.CANARY_NAME = p.get("canary") or config.CANARY_NAME
+        awsapi.set_regions(p.get("bucket_regions"))
         self.master = r.get("master") or {}
         if not self.watch.is_alive():   # only once the canary name is the master's
             self.watch.start()

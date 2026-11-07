@@ -305,6 +305,13 @@ def get_setting(key):
     return r["value"] if r else None
 
 
+def settings_like(prefix):
+    """[(key, value)] of every setting whose key starts with `prefix`."""
+    return [(r["key"], r["value"]) for r in _rows(
+        "SELECT key, value FROM settings WHERE key LIKE ? ESCAPE '\\'",
+        (_esc_like(prefix) + "%",))]
+
+
 def set_setting(key, value):
     _exec("INSERT INTO settings(key,value) VALUES(?,?) "
           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
