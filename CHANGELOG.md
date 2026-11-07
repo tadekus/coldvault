@@ -4,6 +4,13 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.25.1
+
+- **Settings → Connection shows the active bucket's own region.** It used to show
+  `AWS_DEFAULT_REGION` from `.env`, which looked wrong for a bucket in another region
+  (requests were already sent to the right one). When the two differ, the default
+  is shown next to it.
+
 ## 1.25.0
 
 - **Report email after manual uploads too.** With `COLDVAULT_NOTIFY=true`, a manual

@@ -154,7 +154,10 @@ async function loadDashboard() {
     loadAgents(st.agents_enabled, st.version);
     $("#connInfo").innerHTML = `
       <div><b>Bucket</b><code>${esc(st.bucket) || "⚠ not set"}</code></div>
-      <div><b>Region</b><code>${esc(st.region) || "—"}</code></div>
+      <div><b>Region</b><code>${esc(st.region || "unknown")}</code>${
+        !st.region ? ` <span class="muted">— couldn't ask S3 yet; requests follow S3's redirect</span>`
+        : st.default_region && st.region !== st.default_region
+          ? ` <span class="muted">(default in .env: ${esc(st.default_region)})</span>` : ""}</div>
       <div><b>Prefix</b><code>${esc(st.prefix) || "(none)"}</code></div>`;
   } catch (e) {
     $("#statCards").innerHTML = `<div class="card"><div class="lbl">error: ${esc(e.message)}</div></div>`;

@@ -262,7 +262,10 @@ def api_status():
     return jsonify({
         "version": version.VERSION,
         "bucket": config.BUCKET,
-        "region": os.environ.get("AWS_DEFAULT_REGION", ""),
+        # The active bucket's own region (asked from S3 once, then remembered);
+        # default_region is AWS_DEFAULT_REGION, used for anything without a bucket.
+        "region": awsapi.bucket_region(config.BUCKET) if config.BUCKET else None,
+        "default_region": os.environ.get("AWS_DEFAULT_REGION", ""),
         "prefix": config.PREFIX,
         "storage_class": config.STORAGE_CLASS,
         "watch_dirs": config.WATCH_DIRS,
