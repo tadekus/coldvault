@@ -85,10 +85,13 @@ def verify(records, bucket=None, scope=None):
 
         for r in picked:
             prev = r.get("manifest_state")
-            if prev in ("ok", "mismatch") and r.get("manifest_hash"):
+            if prev in ("ok", "mismatch", "accepted") and r.get("manifest_hash"):
                 same = r["manifest_hash"].lower() == rec["hash"]
                 if prev == "ok" and same:
                     rep["verified"] += 1
+                    continue
+                if prev == "accepted" and same:   # a known, reviewed difference
+                    rep["accepted"] = rep.get("accepted", 0) + 1
                     continue
                 rep["mismatch"] += 1
                 rep["mismatch_list"].append({"name": rec["name"], "key": r["key"]})
@@ -163,7 +166,11 @@ def _run_deep(job, items):
                 db.set_manifest(row["id"], "ok", it["algo"], it["hash"])
             else:
                 job["mismatch"] += 1
-                db.set_manifest(row["id"], "mismatch", it["algo"], it["hash"])
+                # The same difference someone already reviewed stays accepted.
+                known = (row.get("manifest_state") == "accepted"
+                         and (row.get("manifest_hash") or "").lower() == it["hash"])
+                db.set_manifest(row["id"], "accepted" if known else "mismatch",
+                                it["algo"], it["hash"])
                 job["mismatch_list"].append(row["key"])
                 log_event("ERROR", "manifest",
                           f"DEEP VERIFY MISMATCH: {row['key']} — archived bytes != offload {it['algo']}")

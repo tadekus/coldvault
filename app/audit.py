@@ -63,13 +63,15 @@ def run_audit(bucket=None):
     m_ok = msummary.get("ok", 0)
     m_mismatch = msummary.get("mismatch", 0)
     m_not_listed = msummary.get("not_in_manifest", 0)
+    m_accepted = msummary.get("accepted", 0)   # reviewed mismatches: not an issue
     m_keys = db.manifest_mismatch_keys(bucket)
 
     level = "ERROR" if (missing or m_mismatch) else ("WARNING" if (size_mismatch or class_drift) else "INFO")
     log_event(level, "audit",
               f"bucket audit of s3://{bucket}: {ok} ok, {len(missing)} MISSING, "
               f"{len(size_mismatch)} size mismatch, {len(class_drift)} class drift, "
-              f"{m_mismatch} manifest mismatch ({m_ok} manifest-verified), "
+              f"{m_mismatch} manifest mismatch ({m_ok} manifest-verified, "
+              f"{m_accepted} accepted mismatch), "
               f"{imported} imported ({len(remote)} objects in bucket)")
     for k in missing:
         log_event("ERROR", "audit", f"MISSING from bucket (index says archived): {k}")
@@ -89,4 +91,5 @@ def run_audit(bucket=None):
         "class_drift": class_drift[:200], "class_drift_count": len(class_drift),
         "manifest_ok": m_ok, "manifest_mismatch_count": m_mismatch,
         "manifest_not_listed": m_not_listed, "manifest_mismatch": m_keys[:200],
+        "manifest_accepted": m_accepted,
     }

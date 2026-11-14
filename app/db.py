@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS files(
   upload_seconds REAL,
   audit_state TEXT,        -- ok | missing | size_mismatch | class_drift (last audit)
   audited_at TEXT,
-  manifest_state TEXT,     -- ok | mismatch | not_in_manifest | algo_unsupported
+  manifest_state TEXT,     -- ok | mismatch | accepted (mismatch reviewed) | listed | not_in_manifest | algo_unsupported
   manifest_algo TEXT,
   manifest_hash TEXT,
   expires_at TEXT,         -- planned deletion date (ColdVault-managed retention)
@@ -606,10 +606,57 @@ def manifest_summary(bucket):
         "WHERE bucket=? AND manifest_state IS NOT NULL GROUP BY manifest_state", (bucket,))}
 
 
-def manifest_mismatch_keys(bucket, limit=200):
+def manifest_mismatch_keys(bucket, limit=200, session_id=None):
+    """Keys whose archived bytes differ from their offload manifest and that
+    nobody has accepted yet — optionally only those a given session uploaded."""
+    where, params = "bucket=? AND manifest_state='mismatch'", [bucket]
+    if session_id is not None:
+        where += " AND session_id=?"
+        params.append(session_id)
     return [r["key"] for r in _rows(
-        "SELECT key FROM files WHERE bucket=? AND manifest_state='mismatch' "
-        "ORDER BY key LIMIT ?", (bucket, limit))]
+        f"SELECT key FROM files WHERE {where} ORDER BY key LIMIT ?", params + [limit])]
+
+
+def manifest_mismatch_count(bucket, session_id):
+    return _row("SELECT COUNT(*) c FROM files WHERE bucket=? AND session_id=? "
+                "AND manifest_state='mismatch'", (bucket, session_id))["c"]
+
+
+def _accept_where(bucket, q, state):
+    where, params = "WHERE manifest_state = ?", [state]
+    if bucket:
+        where += " AND bucket = ?"
+        params.append(bucket)
+    for term in (q or "").split():
+        where += " AND key LIKE ?"
+        params.append(f"%{term}%")
+    return where, params
+
+
+def manifest_accept_preview(bucket, q, undo=False):
+    """What accept_manifest() would change: count, per-extension breakdown
+    and a sample of keys."""
+    where, params = _accept_where(bucket, q, "accepted" if undo else "mismatch")
+    rows = _rows(f"SELECT key FROM files {where} ORDER BY key", params)
+    exts = {}
+    for r in rows:
+        name = r["key"].rsplit("/", 1)[-1]
+        ext = os.path.splitext(name)[1].lower() or "(no extension)"
+        exts[ext] = exts.get(ext, 0) + 1
+    return {"count": len(rows),
+            "extensions": sorted(exts.items(), key=lambda e: -e[1]),
+            "names": sorted({r["key"].rsplit("/", 1)[-1] for r in rows})[:20],
+            "sample": [r["key"] for r in rows[:20]]}
+
+
+def accept_manifest(bucket, q, undo=False):
+    """Mark offload-manifest mismatches as reviewed and accepted (or undo
+    that). Returns the number of files changed. Uploading a file again
+    records a fresh result, which replaces an acceptance."""
+    where, params = _accept_where(bucket, q, "accepted" if undo else "mismatch")
+    cur = _exec(f"UPDATE files SET manifest_state=? {where}",
+                ["mismatch" if undo else "accepted"] + params)
+    return cur.rowcount
 
 
 def files_by_basename(bucket, name, scope=None, limit=50):

@@ -127,6 +127,7 @@
     <select id="manifestFilter" title="offload manifest check">
       <option value="">any manifest</option>
       <option value="mismatch">manifest: mismatch</option>
+      <option value="accepted">manifest: mismatch accepted</option>
       <option value="ok">manifest: ok</option>
       <option value="listed">manifest: listed (hash attached)</option>
       <option value="not_in_manifest">not in manifest</option>
@@ -168,6 +169,7 @@
     <label>days <input id="restoreDays" type="number" value="7" min="1" max="365" style="width:70px"></label>
     <button id="btnRestore">Request restore</button>
     <span class="spacer"></span>
+    <button id="btnManifestAccept" class="secondary" hidden></button>
     <span id="filesSummary" class="muted"></span>
   </div>
   <div class="tablewrap">

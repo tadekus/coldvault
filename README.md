@@ -799,6 +799,25 @@ audit and email report, not only when it was first uploaded. (Deep Archive objec
 be re-hashed without a restore, so the audit re-checks the result recorded at upload
 rather than re-reading the bytes.)
 
+### Accepting known mismatches
+
+Some files are expected to differ from their offload manifest. Sony cameras' `MEDIAPRO.xml`
+card index, for example, is often rewritten by DIT or Sony software after the offload.
+Once you've checked such files, accept them, and audits and report emails stop counting
+them as issues:
+
+1. In **Index**, set the manifest filter to **manifest: mismatch**. Optionally narrow it
+   with the search box (e.g. `MEDIAPRO`) and the bucket picker.
+2. Click **Accept N as reviewed…**. The confirmation lists the files by type and name, so
+   you can see that no footage is among them. It applies to every match of the search,
+   not only the page shown.
+
+Accepted files keep a `csv✗ accepted` badge and are counted on their own
+(`… · 40 accepted`) in audits and emails. **manifest: mismatch accepted** lists them, with
+**Un-accept N…** to undo. If an accepted file is uploaded again, its new check result
+replaces the acceptance. A deep verify that finds the same difference again keeps it
+accepted.
+
 When you actually **download** a restored object, ColdVault does the *byte-level*
 re-verify: it recomputes the manifest hash from the restored bytes (in the same read pass
 as the download's SHA-256 check) and compares it to the offload value — the strongest
@@ -971,7 +990,9 @@ With `COLDVAULT_NOTIFY=true`, every finished upload session — drive auto-uploa
 manual upload from the Upload tab, on the master or on an agent — is followed by a bucket
 audit and a report email. The subject says whether any files failed and whether the audit
 was **OK** or **found issues**; the body names the machine, label, prefix and counts, and
-lists any issues. A stopped session sends nothing. Email is always sent by the master, so
+lists any issues. Offload-manifest mismatches are listed by name only for files that
+session uploaded; older ones that nobody has reviewed yet are one line with their count
+(see [Accepting known mismatches](#accepting-known-mismatches)). A stopped session sends nothing. Email is always sent by the master, so
 these settings belong in the master's `.env`, not an agent's.
 
 **Settings → Email notifications** also lets you **Email an audit report

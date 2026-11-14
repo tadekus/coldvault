@@ -583,6 +583,29 @@ def api_manifest_verify():
     return jsonify(rep)
 
 
+@app.post("/api/manifest/accept")
+def api_manifest_accept():
+    """Mark offload-manifest mismatches as reviewed and accepted, so audits and
+    report emails stop counting them as issues — for files known to change after
+    offload (e.g. a camera's MEDIAPRO.xml). Applies to every mismatch matching
+    the Index tab's bucket + search, not just the page shown. preview=true only
+    counts; undo=true turns accepted ones back into mismatches."""
+    data = request.get_json(silent=True) or {}
+    bucket = data.get("bucket") or config.BUCKET
+    bucket = None if bucket == "*" else bucket
+    q = (data.get("q") or "").strip() or None
+    undo = bool(data.get("undo"))
+    if data.get("preview"):
+        return jsonify(db.manifest_accept_preview(bucket, q, undo))
+    n = db.accept_manifest(bucket, q, undo)
+    where = f"s3://{bucket}" if bucket else "all buckets"
+    what = f" matching '{q}'" if q else ""
+    log_event("INFO" if undo else "WARNING", "manifest",
+              f"{n} offload-manifest mismatch(es) in {where}{what} "
+              + ("returned to unreviewed" if undo else "accepted as reviewed"))
+    return jsonify({"changed": n})
+
+
 @app.get("/api/manifest/jobs")
 def api_manifest_jobs():
     return jsonify(manifest_verify.jobs())

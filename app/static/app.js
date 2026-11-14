@@ -57,6 +57,7 @@ const chip = s => s ? `<span class="chip ${esc(s)}">${esc(s)}</span>` : "—";
 function manifestBadge(state) {
   if (state === "ok") return ` <span class="chip verified" title="matches offload checksum manifest">csv✓</span>`;
   if (state === "mismatch") return ` <span class="chip failed" title="hash does NOT match the offload manifest">csv✗</span>`;
+  if (state === "accepted") return ` <span class="chip remote" title="differs from the offload manifest — reviewed and accepted, no longer counted as an issue">csv✗ accepted</span>`;
   if (state === "algo_unsupported") return ` <span class="chip WARNING" title="manifest hash algorithm unsupported">csv?</span>`;
   if (state === "listed") return ` <span class="chip remote" title="in the offload manifest (name+size match); bytes not yet re-hashed — verified on download or by deep verify">csv·</span>`;
   return "";  // not_in_manifest / none -> no badge
@@ -330,6 +331,7 @@ $("#btnAudit").onclick = async () => {
     if (r.manifest_mismatch_count) msg += `<br><span style="color:var(--err)">${r.manifest_mismatch_count} offload-manifest mismatch</span>` +
       (r.manifest_mismatch && r.manifest_mismatch.length ? `: <span class="mono" style="font-size:11px">${r.manifest_mismatch.slice(0,10).map(esc).join(", ")}</span>` : "");
     if (r.manifest_ok) msg += `<br><span class="muted">${r.manifest_ok} file(s) verified against offload manifests</span>`;
+    if (r.manifest_accepted) msg += `<br><span class="muted">${r.manifest_accepted} manifest mismatch(es) reviewed and accepted — not counted</span>`;
     msg += `<br><span class="muted">Flagged files are badged in the Index tab. See the Logs (category: audit).</span>`;
     $("#auditResult").innerHTML = msg;
     if (activeTab === "files") loadFiles();
@@ -970,6 +972,7 @@ async function loadFiles() {
   });
   const r = await api("/api/files?" + q);
   fillBucketFilter(r.buckets, r.active);
+  showManifestAccept(r.total, q.get("bucket"), q.get("q"), q.get("manifest"));
   $("#filesSummary").textContent = `${r.total.toLocaleString()} objects · ${fmtBytes(r.total_bytes)}`;
   $("#filesSummary").title = `${(r.total_bytes || 0).toLocaleString()} bytes exactly`;
   $("#pageInfo").textContent = `page ${page + 1} / ${Math.max(1, Math.ceil(r.total / PAGE_SIZE))}`;
@@ -999,6 +1002,58 @@ async function loadFiles() {
     updateSelCount();
   });
 }
+
+/* ---------- accept reviewed offload-manifest mismatches ---------- */
+// Applies to every mismatch the current Index search matches (bucket + search
+// text), not only the page shown — the same set the summary counts.
+let acceptScope = null;
+function showManifestAccept(total, bucket, q, manifest) {
+  const b = $("#btnManifestAccept");
+  const undo = manifest === "accepted";
+  if (!total || (manifest !== "mismatch" && !undo)) { b.hidden = true; acceptScope = null; return; }
+  acceptScope = { bucket, q, undo };
+  b.textContent = undo ? `Un-accept ${total.toLocaleString()}…` : `Accept ${total.toLocaleString()} as reviewed…`;
+  b.hidden = false;
+}
+
+$("#btnManifestAccept").onclick = async () => {
+  if (!acceptScope) return;
+  const { bucket, q, undo } = acceptScope;
+  const b = $("#btnManifestAccept");
+  try {
+    const p = await api("/api/manifest/accept", { body: { bucket, q, undo, preview: true } });
+    if (!p.count) { loadFiles(); return; }
+    const where = `${bucket === "*" ? "all buckets" : esc(bucket || "the active bucket")}` +
+      (q ? `, keys matching <code>${esc(q)}</code>` : "");
+    const exts = p.extensions.map(([e, n]) => `<li><b>${n.toLocaleString()}</b> × <code>${esc(e)}</code></li>`).join("");
+    const names = p.names.length < 6
+      ? `<p>File names: ${p.names.map(n => `<code>${esc(n)}</code>`).join(", ")}</p>` : "";
+    const sample = p.sample.map(k => `<div class="mono" style="font-size:11px">${esc(k)}</div>`).join("") +
+      (p.count > p.sample.length ? `<div class="muted">… +${(p.count - p.sample.length).toLocaleString()} more</div>` : "");
+    const html = undo
+      ? `<p>Turn <b>${p.count.toLocaleString()}</b> accepted file(s) in ${where} back into unreviewed
+           mismatches? Audits and report emails will count them as issues again.</p>${sample}`
+      : `<p>Accept <b>${p.count.toLocaleString()}</b> offload-manifest mismatch(es) in ${where} as reviewed.
+           Audits and report emails stop counting them as issues. The files stay archived as they
+           are, and the Index keeps marking them <i>accepted</i>.</p>
+         <p>Accept only files you know change after offload, such as a camera's <code>MEDIAPRO.xml</code>.
+           A mismatched clip (<code>.mxf</code>, <code>.mov</code>, <code>.braw</code>…) means the archived
+           footage differs from what the camera recorded — check it first.</p>
+         <p>By file type:</p><ul>${exts}</ul>${names}${sample}`;
+    if (!await confirmBox(undo ? "Un-accept mismatches" : "Accept manifest mismatches", html,
+                          undo ? "Un-accept" : `Accept ${p.count.toLocaleString()}`)) return;
+    b.disabled = true;
+    const r = await api("/api/manifest/accept", { body: { bucket, q, undo } });
+    b.disabled = false;
+    page = 0;
+    await loadFiles();
+    $("#filesSummary").textContent = `✔ ${r.changed.toLocaleString()} ${undo ? "un-accepted" : "accepted"} — ` +
+      $("#filesSummary").textContent;
+  } catch (e) {
+    b.disabled = false;
+    alert("Couldn't change the manifest state: " + e.message);
+  }
+};
 
 $("#btnSearch").onclick = () => { page = 0; loadFiles(); };
 $("#search").addEventListener("keydown", e => { if (e.key === "Enter") { page = 0; loadFiles(); } });

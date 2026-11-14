@@ -87,7 +87,20 @@ def _row(label, value):
             f'<td style="padding:4px 0;font-weight:600;">{value}</td></tr>')
 
 
-def upload_report_html(session, audit):
+def _manifest_row(audit, new=None):
+    """'5270 verified · 96 mismatch (2 from this upload) · 40 accepted'."""
+    txt = f'{audit.get("manifest_ok", 0)} verified · {audit.get("manifest_mismatch_count", 0)} mismatch'
+    if new is not None and audit.get("manifest_mismatch_count"):
+        txt += f" ({new} from this upload)"
+    if audit.get("manifest_accepted"):
+        txt += f' · {audit["manifest_accepted"]} accepted'
+    return _row("Offload manifest", txt)
+
+
+def upload_report_html(session, audit, m_new=(), m_new_count=0):
+    """`m_new`/`m_new_count`: offload-manifest mismatches this session itself
+    uploaded. They're listed by name; older unreviewed ones are one line, so
+    the same files don't fill every report."""
     s = session
     ok = audit["ok_status"]
     banner_bg, banner = ("#16351f", "✅ Audit OK — bucket matches the index") if ok \
@@ -105,8 +118,7 @@ def upload_report_html(session, audit):
         _row("Bucket now holds", f'{audit["in_bucket"]} objects · {_fmt_bytes(audit["bucket_bytes"])}'),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '
                       f'{audit["size_mismatch_count"]} size-mismatch · {audit["class_drift_count"]} class-drift'),
-        _row("Offload manifest", f'{audit.get("manifest_ok", 0)} verified · '
-                                 f'{audit.get("manifest_mismatch_count", 0)} mismatch'),
+        _manifest_row(audit, m_new_count),
     ])
     issues = ""
     if not ok:
@@ -122,9 +134,16 @@ def upload_report_html(session, audit):
         if audit["class_drift_count"]:
             parts.append("<b>Wrong storage class:</b><br>" +
                          "<br>".join(f'{m["key"]} ({m["class"]})' for m in audit["class_drift"][:20]))
-        if audit.get("manifest_mismatch_count"):
-            parts.append("<b>Offload manifest mismatch (archived file ≠ offload hash):</b><br>" +
-                         "<br>".join(audit.get("manifest_mismatch", [])[:20]))
+        if m_new_count:
+            parts.append("<b>Offload manifest mismatch in this upload (archived file ≠ offload hash):</b><br>" +
+                         "<br>".join(list(m_new)[:20]) +
+                         (f"<br>… +{m_new_count - 20} more" if m_new_count > 20 else ""))
+        older = audit.get("manifest_mismatch_count", 0) - m_new_count
+        if older > 0:
+            parts.append(f"<b>{older} offload manifest mismatch(es) from earlier sessions</b> "
+                         "not reviewed yet — not listed again here. In ColdVault, open "
+                         "Index and filter “manifest: mismatch” to see them and accept "
+                         "the ones you've checked.")
         issues = ('<div style="margin-top:16px;padding:12px;background:#2a1a17;border-radius:8px;'
                   'font-family:monospace;font-size:12px;color:#e8a;">' + "<br><br>".join(parts) + "</div>")
 
@@ -150,8 +169,7 @@ def audit_report_html(audit):
         _row("Imported this run", audit["imported"]),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '
                       f'{audit["size_mismatch_count"]} size-mismatch · {audit["class_drift_count"]} class-drift'),
-        _row("Offload manifest", f'{audit.get("manifest_ok", 0)} verified · '
-                                 f'{audit.get("manifest_mismatch_count", 0)} mismatch'),
+        _manifest_row(audit),
     ])
     return f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:auto;color:#222;">
@@ -190,12 +208,15 @@ def notify_upload_complete(sid):
         session = db.get_session(sid) or {}
         # Audit the bucket this session actually uploaded to — with a
         # canary-chosen bucket that need not be the active one.
-        report = audit_mod.run_audit(session.get("bucket") or config.BUCKET)
+        bucket = session.get("bucket") or config.BUCKET
+        report = audit_mod.run_audit(bucket)
+        m_new = db.manifest_mismatch_keys(bucket, limit=20, session_id=sid)
+        m_new_count = db.manifest_mismatch_count(bucket, sid)
         status = "OK" if report["ok_status"] else "ISSUES FOUND"
         label = session.get("label") or "drive"
         failed = session.get("failed_files") or 0
         done = f"finished with {failed} failed file(s)" if failed else "archived"
         subject = f"ColdVault: {label} {done} — audit {status}"
-        send_email(subject, upload_report_html(session, report))
+        send_email(subject, upload_report_html(session, report, m_new, m_new_count))
     except Exception as e:
         log_event("ERROR", "notify", f"post-upload audit/email failed for session #{sid}: {e}")

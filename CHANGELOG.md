@@ -4,6 +4,22 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.26.0
+
+- **Report emails list only this session's manifest mismatches.** An offload-manifest
+  mismatch used to be listed by name in every later report email, because the audit
+  covers the whole bucket. Now the email names only mismatches from the session that
+  just finished; older unreviewed ones are one line with their count.
+- **Accept reviewed manifest mismatches.** Index → filter **manifest: mismatch** →
+  **Accept N as reviewed…** marks every mismatch matching the search as reviewed, for
+  files known to change after offload (e.g. Sony `MEDIAPRO.xml`).
+  - The confirmation shows the count by file type and the file names.
+  - Accepted files no longer turn audits, report emails or the Dashboard's integrity
+    status into "issues", and are counted separately.
+  - New filter **manifest: mismatch accepted**, with **Un-accept N…** to undo.
+  - Uploading a file again replaces its acceptance with the new result. A deep verify
+    or manifest re-check that finds the same difference keeps it accepted.
+
 ## 1.25.1
 
 - **Settings → Connection shows the active bucket's own region.** It used to show
