@@ -149,6 +149,37 @@ CREATE TABLE IF NOT EXISTS events(
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+-- Every file an upload session skipped, and why: unchanged | same_content |
+-- duplicate | other_session. target_key = the archived object it matched.
+CREATE TABLE IF NOT EXISTS skips(
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER,
+  bucket TEXT,
+  key TEXT,
+  size INTEGER,
+  reason TEXT,
+  target_key TEXT,
+  at TEXT,
+  UNIQUE(session_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_skips_session ON skips(session_id, reason);
+
+-- A file not stored under its own key because identical content is already
+-- archived (deduplicated): restoring or downloading `key` uses `target_key`.
+CREATE TABLE IF NOT EXISTS links(
+  id INTEGER PRIMARY KEY,
+  bucket TEXT,
+  key TEXT,
+  target_key TEXT,
+  size INTEGER,
+  sha256 TEXT,
+  mtime REAL,
+  session_id INTEGER,
+  created_at TEXT,
+  UNIQUE(bucket, key)
+);
+CREATE INDEX IF NOT EXISTS idx_links_target ON links(bucket, target_key);
 """
 
 
@@ -1002,6 +1033,15 @@ def find_keys_any_bucket(keys, chunk=400):
             if r["key"] not in out or r["status"] == "verified":
                 out[r["key"]] = {"bucket": r["bucket"], "size": r["size"],
                                  "status": r["status"]}
+        # A linked file (skipped duplicate) is archived through its target.
+        for r in _rows(
+                "SELECT l.key, l.bucket, l.size, f.status FROM links l "
+                "JOIN files f ON f.bucket=l.bucket AND f.key=l.target_key "
+                f"WHERE l.key IN ({','.join('?' * len(part))})", part):
+            if r["key"] not in out or (r["status"] == "verified"
+                                       and out[r["key"]]["status"] != "verified"):
+                out[r["key"]] = {"bucket": r["bucket"], "size": r["size"],
+                                 "status": r["status"]}
     return out
 
 
@@ -1131,13 +1171,15 @@ def clear_index(bucket):
     Returns per-table row counts removed."""
     counts = {}
     if bucket in (None, "*", ""):
-        for t in ("files", "restores", "downloads", "sessions", "dl_sessions"):
+        for t in ("files", "restores", "downloads", "sessions", "dl_sessions", "skips", "links"):
             counts[t] = _exec(f"DELETE FROM {t}").rowcount
     else:
         counts["files"] = _exec("DELETE FROM files WHERE bucket=?", (bucket,)).rowcount
         counts["restores"] = _exec("DELETE FROM restores WHERE bucket=?", (bucket,)).rowcount
         counts["downloads"] = _exec("DELETE FROM downloads WHERE bucket=?", (bucket,)).rowcount
         counts["sessions"] = _exec("DELETE FROM sessions WHERE bucket=?", (bucket,)).rowcount
+        counts["skips"] = _exec("DELETE FROM skips WHERE bucket=?", (bucket,)).rowcount
+        counts["links"] = _exec("DELETE FROM links WHERE bucket=?", (bucket,)).rowcount
         # dl_sessions has no bucket column (a session can span buckets), so drop
         # the ones whose file rows we just removed instead of leaving them
         # claiming files the index no longer knows about.
@@ -1178,3 +1220,133 @@ def latest_restores_for_files(items):
 
 
 init()
+
+
+# ---- skipped files and dedupe links ----
+
+SKIP_REASONS = ("unchanged", "same_content", "duplicate", "other_session")
+
+
+def record_skip(session_id, bucket, key, size, reason, target_key=None,
+                sha256=None, mtime=None):
+    """Remember that an upload session skipped `key`, and why. A duplicate also
+    becomes a link, so the file can be found, restored and downloaded under its
+    own path although only `target_key` holds the bytes."""
+    _exec("INSERT OR REPLACE INTO skips(session_id, bucket, key, size, reason, target_key, at) "
+          "VALUES(?,?,?,?,?,?,?)",
+          (session_id, bucket, key, size, reason, target_key, now()))
+    if reason == "duplicate" and target_key and target_key != key:
+        set_link(bucket, key, target_key, size, sha256, mtime, session_id)
+
+
+def set_link(bucket, key, target_key, size, sha256=None, mtime=None, session_id=None):
+    _exec("""INSERT INTO links(bucket, key, target_key, size, sha256, mtime, session_id, created_at)
+             VALUES(?,?,?,?,?,?,?,?)
+             ON CONFLICT(bucket, key) DO UPDATE SET target_key=excluded.target_key,
+               size=excluded.size, sha256=COALESCE(excluded.sha256, links.sha256),
+               mtime=COALESCE(excluded.mtime, links.mtime),
+               session_id=excluded.session_id, created_at=excluded.created_at""",
+          (bucket, key, target_key, size, sha256, mtime, session_id, now()))
+
+
+def get_link(bucket, key):
+    """The link for `key`, with its target's index row state (target_status)."""
+    return _row("SELECT l.*, f.status AS target_status, f.sha256 AS target_sha256, "
+                "f.size AS target_size FROM links l "
+                "LEFT JOIN files f ON f.bucket=l.bucket AND f.key=l.target_key "
+                "WHERE l.bucket=? AND l.key=?", (bucket, key))
+
+
+def session_skips(session_id, reason=None, limit=200, offset=0):
+    where, params = "WHERE session_id=?", [session_id]
+    if reason:
+        where += " AND reason=?"
+        params.append(reason)
+    counts = {r["reason"]: r["c"] for r in _rows(
+        "SELECT reason, COUNT(*) c FROM skips WHERE session_id=? GROUP BY reason", (session_id,))}
+    total = _row(f"SELECT COUNT(*) c, COALESCE(SUM(size),0) b FROM skips {where}", params)
+    items = _rows(f"SELECT key, size, reason, target_key, at FROM skips {where} "
+                  f"ORDER BY key LIMIT ? OFFSET ?", params + [min(int(limit), 1000), int(offset)])
+    return {"counts": counts, "total": total["c"], "bytes": total["b"], "items": items}
+
+
+def links_under(bucket, prefixes=None, keys=None, limit=200000):
+    """Links whose own key is under any of `prefixes` or is one of `keys`."""
+    clauses, params = [], []
+    for p in (prefixes or []):
+        clauses.append("l.key LIKE ? ESCAPE '\\'")
+        params.append(f"{_esc_like(p)}%")
+    if keys:
+        clauses.append(f"l.key IN ({','.join('?' * len(keys))})")
+        params += list(keys)
+    if not clauses:
+        return []
+    return _rows("SELECT l.*, f.status AS target_status, f.sha256 AS target_sha256 "
+                 "FROM links l LEFT JOIN files f ON f.bucket=l.bucket AND f.key=l.target_key "
+                 f"WHERE l.bucket=? AND ({' OR '.join(clauses)}) ORDER BY l.key LIMIT ?",
+                 [bucket] + params + [limit])
+
+
+def links_to(bucket, target_keys):
+    """Links pointing at any of `target_keys` (in chunks — SQLite caps parameters)."""
+    out, keys = [], list(target_keys)
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        out += _rows(f"SELECT * FROM links WHERE bucket=? AND target_key IN "
+                     f"({','.join('?' * len(chunk))})", [bucket] + chunk)
+    return out
+
+
+def drop_links_to(bucket, target_key):
+    return _exec("DELETE FROM links WHERE bucket=? AND target_key=?",
+                 (bucket, target_key)).rowcount
+
+
+def tree_links(bucket, prefix=""):
+    """Links under a prefix for the Tree: per sub-folder counts, and the ones
+    sitting directly at this level."""
+    plen = len(prefix)
+    like = f"{_esc_like(prefix)}%"
+    folders = _rows(
+        "SELECT substr(k, 1, instr(k, '/')) AS name, COUNT(*) c, COALESCE(SUM(size),0) b "
+        "FROM (SELECT substr(key, ?+1) AS k, size FROM links "
+        "      WHERE bucket=? AND key LIKE ? ESCAPE '\\') "
+        "WHERE instr(k, '/') > 0 GROUP BY name", (plen, bucket, like))
+    files = _rows(
+        "SELECT * FROM links WHERE bucket=? AND key LIKE ? ESCAPE '\\' "
+        "AND instr(substr(key, ?+1), '/') = 0 ORDER BY key LIMIT 1000",
+        (bucket, like, plen))
+    return folders, files
+
+
+def linked_counts():
+    return {r["bucket"]: r["c"] for r in _rows(
+        "SELECT bucket, COUNT(*) c FROM links GROUP BY bucket")}
+
+
+def duplicate_skip_events(location, start, end):
+    """Duplicate-skip lines forwarded to this master's event log — the source
+    for linking a session's duplicates recorded before links existed."""
+    sql = ("SELECT ts, message FROM events WHERE category='upload' "
+           "AND message LIKE '%skip (duplicate content)%' AND ts >= ?")
+    params = [start]
+    if end:
+        sql += " AND ts <= ?"
+        params.append(end)
+    sql += " AND message LIKE ?" if location else " AND message NOT LIKE '[%'"
+    if location:
+        params.append(f"[{location}] %")
+    return _rows(sql + " ORDER BY id", params)
+
+
+def links_map(bucket, keys):
+    """{key: link row with target_status} for those of `keys` that are links."""
+    out, keys = {}, list(keys)
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        for r in _rows("SELECT l.*, f.status AS target_status FROM links l "
+                       "LEFT JOIN files f ON f.bucket=l.bucket AND f.key=l.target_key "
+                       f"WHERE l.bucket=? AND l.key IN ({','.join('?' * len(chunk))})",
+                       [bucket] + chunk):
+            out[r["key"]] = r
+    return out

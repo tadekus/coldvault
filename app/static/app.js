@@ -1224,7 +1224,9 @@ async function loadSessions() {
       <td><div class="progress"><i style="width:${pct}%"></i></div>
           <span class="mono">${s.done_files} up${s.skipped_files ? ` · ${s.skipped_files} skip` : ""}${s.failed_files ? ` · ${s.failed_files} fail` : ""} / ${s.total_files} files · ${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)} (${pct}%)</span></td>
       <td class="num">${s.done_files}</td>
-      <td class="num">${s.skipped_files}</td>
+      <td class="num">${s.skipped_files
+        ? `<a href="#" class="sessSkips" data-id="${s.id}" title="which files were skipped, and why">${s.skipped_files}</a>`
+        : 0}</td>
       <td class="num" ${s.failed_files ? 'style="color:var(--err)"' : ""}>${s.failed_files}</td>
       <td class="mono">${esc(s.started_at || "")}</td>
       <td>${["queued", "scanning", "running"].includes(s.status)
@@ -1247,6 +1249,138 @@ document.addEventListener("click", async e => {
   } catch (err) { alert("✘ " + err.message); }
   loadSessions();
 });
+
+/* ---------- skipped files of a session ---------- */
+const SKIP_REASONS = {
+  unchanged: ["Unchanged", "already archived under this path, same size and date"],
+  same_content: ["Same content", "archived under this path; only the date changed"],
+  duplicate: ["Duplicate", "identical to a file archived under another path — linked to it, so it restores and downloads under its own path"],
+  other_session: ["Other session", "another session archived identical content under this path meanwhile"],
+};
+
+document.addEventListener("click", e => {
+  const a = e.target.closest(".sessSkips");
+  if (!a) return;
+  e.preventDefault();
+  openSkips(+a.dataset.id);
+});
+
+async function openSkips(sid) {
+  const sess = (await api("/api/sessions")).find(s => s.id === sid) || { id: sid, skipped_files: 0 };
+  const active = ["queued", "scanning", "running"].includes(sess.status);
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `<div class="modal wide" role="dialog" aria-modal="true">
+      <h3>Session #${sid} — skipped files</h3>
+      <div class="mbody">
+        <div class="skreasons"></div>
+        <div class="skmissing"></div>
+        <div class="tablewrap"><table class="sktable"><thead><tr>
+          <th>Path</th><th>Size</th><th>Why</th><th>Archived copy</th></tr></thead><tbody></tbody></table></div>
+        <div class="skmore"></div>
+      </div>
+      <div class="mbtns"><button class="secondary" data-close>Close</button></div></div>`;
+  document.body.appendChild(bg);
+  const close = () => { bg.remove(); document.removeEventListener("keydown", key); };
+  const key = ev => { if (ev.key === "Escape") close(); };
+  document.addEventListener("keydown", key);
+  bg.addEventListener("click", ev => { if (ev.target === bg || ev.target.closest("[data-close]")) close(); });
+
+  let reason = "", offset = 0;
+  async function load(append) {
+    const q = new URLSearchParams({ reason, offset, limit: 200 });
+    let r;
+    try { r = await api(`/api/sessions/${sid}/skips?${q}`); }
+    catch (err) { bg.querySelector(".skreasons").textContent = "✘ " + err.message; return; }
+    const all = Object.values(r.counts).reduce((a, n) => a + n, 0);
+    const chipFor = (id, label, n) => `<button class="${reason === id ? "" : "secondary"} skr" data-r="${id}">${label} · ${n.toLocaleString()}</button>`;
+    bg.querySelector(".skreasons").innerHTML =
+      chipFor("", "All", all) +
+      Object.entries(SKIP_REASONS).filter(([id]) => r.counts[id])
+        .map(([id, [label]]) => chipFor(id, label, r.counts[id])).join("") +
+      (reason ? `<div class="muted" style="margin-top:6px">${esc(SKIP_REASONS[reason][1])}</div>` : "");
+    bg.querySelectorAll(".skr").forEach(b => b.onclick = () => { reason = b.dataset.r; offset = 0; load(false); });
+
+    const unrecorded = (sess.skipped_files || 0) - all;
+    bg.querySelector(".skmissing").innerHTML = unrecorded > 0 ? `
+      <div class="sknote">
+        <b>${unrecorded.toLocaleString()} skipped file(s) aren't listed</b> — they were skipped before
+        ColdVault recorded skips. Duplicates among them aren't linked yet, so restoring this
+        session's folder wouldn't include them.
+        ${active ? `<div class="muted" style="margin-top:6px">You can link them once this session has finished or been stopped.</div>` : `
+        <div class="row" style="margin-top:8px;gap:8px">
+          <button class="secondary sklog">Link duplicates from ColdVault's log</button>
+          <label class="button secondary" style="cursor:pointer">Link from a file of log lines…
+            <input type="file" class="skfile" accept=".txt,.log" hidden></label>
+        </div>
+        <div class="muted" style="margin-top:6px;font-size:12px">The file can be the
+          <code>skip (duplicate content)</code> lines from the uploading machine's
+          <code>data/coldvault.log*</code>, or <code>file  -&gt;  s3://bucket/key</code> lines.
+          You'll see what would be linked before anything changes.</div>
+        <div class="skimport"></div>`}
+      </div>` : "";
+    const lg = bg.querySelector(".sklog"), fi = bg.querySelector(".skfile");
+    if (lg) lg.onclick = () => linkDups(null);
+    if (fi) fi.onchange = () => fi.files[0] && linkDups(fi.files[0]);
+
+    const tb = bg.querySelector(".sktable tbody");
+    const html = r.items.map(i => `<tr>
+        <td class="key">${esc(i.key)}</td>
+        <td class="num">${fmtBytes(i.size)}</td>
+        <td>${esc((SKIP_REASONS[i.reason] || [i.reason])[0])}</td>
+        <td class="key muted">${i.target_key && i.target_key !== i.key ? esc(i.target_key) : ""}</td>
+      </tr>`).join("");
+    tb.innerHTML = append ? tb.innerHTML + html
+      : html || `<tr><td colspan="4" class="muted" style="padding:14px">nothing recorded${reason ? " for this reason" : ""}</td></tr>`;
+    offset += r.items.length;
+    bg.querySelector(".skmore").innerHTML = offset < r.total
+      ? `<button class="secondary skm">Show more (${(r.total - offset).toLocaleString()} left)</button>` : "";
+    const m = bg.querySelector(".skm");
+    if (m) m.onclick = () => load(true);
+  }
+
+  async function linkDups(file) {
+    const out = bg.querySelector(".skimport");
+    const send = apply => {
+      const fd = new FormData();
+      if (file) fd.append("file", file);
+      if (apply) fd.append("apply", "1");
+      return fetch(`/api/sessions/${sid}/link-duplicates`, { method: "POST", body: fd })
+        .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText); return d; });
+    };
+    out.innerHTML = `<div class="muted">checking ${file ? esc(file.name) : "ColdVault's log"}…</div>`;
+    let p;
+    try { p = await send(false); } catch (err) { out.innerHTML = `<div style="color:var(--err)">✘ ${esc(err.message)}</div>`; return; }
+    const skipped = [
+      p.already && `${p.already.toLocaleString()} already linked`,
+      p.outside_session && `${p.outside_session.toLocaleString()} from other sessions (by time)`,
+      p.other_bucket && `${p.other_bucket.toLocaleString()} for other buckets`,
+      p.target_missing && `${p.target_missing.toLocaleString()} whose archived copy isn't in the index`,
+      p.archived_itself && `${p.archived_itself.toLocaleString()} archived under their own path since`,
+      p.not_on_disk && `${p.not_on_disk.toLocaleString()} not found in the session's source folder on ${machine(sess.location)} (is the drive mounted?)`,
+      p.not_duplicate_lines && `${p.not_duplicate_lines.toLocaleString()} other lines ignored`,
+    ].filter(Boolean);
+    out.innerHTML = `<div style="margin-top:8px">
+        <b>${p.linked.toLocaleString()}</b> duplicate(s) can be linked, from ${p.lines.toLocaleString()} line(s) in ${esc(p.source)}.
+        ${skipped.length ? `<div class="muted">Left out: ${esc(skipped.join(" · "))}</div>` : ""}
+        ${p.sample.length ? `<div style="margin-top:6px">${p.sample.map(x =>
+          `<div class="mono" style="font-size:11px">${esc(x.key)} <span class="muted">→ ${esc(x.target_key)}</span></div>`).join("")}
+          ${p.linked > p.sample.length ? `<div class="muted">… +${(p.linked - p.sample.length).toLocaleString()} more</div>` : ""}</div>` : ""}
+        ${p.linked ? `<button class="skapply" style="margin-top:8px">Link ${p.linked.toLocaleString()}</button>` : ""}
+      </div>`;
+    const ap = out.querySelector(".skapply");
+    if (ap) ap.onclick = async () => {
+      ap.disabled = true;
+      try {
+        const r = await send(true);
+        out.innerHTML = `<div style="color:var(--ok);margin-top:8px">✔ linked ${r.linked.toLocaleString()} duplicate(s)</div>`;
+        reason = ""; offset = 0; load(false);
+      } catch (err) { ap.disabled = false; out.insertAdjacentHTML("beforeend", `<div style="color:var(--err)">✘ ${esc(err.message)}</div>`); }
+    };
+  }
+
+  load(false);
+}
 
 /* ---------- restores ---------- */
 async function loadRestores() {
@@ -1326,7 +1460,7 @@ async function loadDownloads() {
     return `<tr${i.expired ? ' style="opacity:.55"' : ""}>
       <td><input type="checkbox" class="dlsel" data-id="${esc(id)}" ${dlSelected.has(id) ? "checked" : ""}${i.expired ? " disabled title='restore expired — re-request in the Index tab'" : ""}></td>
       <td class="mono">${esc(i.bucket)}</td>
-      <td class="key">${esc(i.key)}</td>
+      <td class="key">${esc(i.key)}${i.source_key ? `<div class="muted" style="font-size:11px">linked duplicate — downloaded from ${esc(i.source_key)}</div>` : ""}</td>
       <td class="num">${fmtBytes(i.size)}</td>
       <td>${esc(i.tier || "—")}</td>
       <td>${expiryCell}</td>
@@ -1781,7 +1915,8 @@ async function trRenderInto(el, id) {
         <input type="checkbox" class="trfolder" data-id="${esc(fid(f))}"
                ${trCovered(fid(f)) ? "checked" : ""} ${trCovered(fid(f)) && !trPrefixes.has(fid(f)) ? "disabled" : ""}>
         <span class="fname" data-toggle="${esc(fid(f))}">📁 ${esc(f.name.replace(/\/$/, ""))}</span>
-        <span class="meta">${f.count.toLocaleString()} file(s) · ${fmtBytes(f.bytes)}</span>
+        <span class="meta">${f.count.toLocaleString()} file(s) · ${fmtBytes(f.bytes)}${f.linked
+          ? ` <span title="skipped duplicates: stored once under another path, restorable here">· +${f.linked.toLocaleString()} linked</span>` : ""}</span>
       </div>
       <div class="kids" data-kids="${esc(fid(f))}" hidden></div>`).join("") +
     d.files.map(f => `
@@ -1791,7 +1926,10 @@ async function trRenderInto(el, id) {
                ${trKeys.has(kid(f)) || trCovered(kid(f)) ? "checked" : ""} ${trCovered(kid(f)) ? "disabled" : ""}>
         <span class="leaf">📄 ${esc(f.name)}</span>
         <span class="meta" title="${(f.size || 0).toLocaleString()} bytes">${fmtBytes(f.size)}</span>
-        ${chip(f.status)}${manifestBadge(f.manifest_state)}
+        ${f.status === "linked"
+          ? `<span class="chip linked" title="a duplicate: its bytes are stored once, as ${esc(f.target_key)} — restoring or downloading this path uses that copy">linked</span>
+             <span class="mono muted" style="font-size:11px">→ ${esc(f.target_key)}</span>`
+          : chip(f.status) + manifestBadge(f.manifest_state)}
         ${f.expires_at ? `<span class="chip WARNING" title="scheduled for deletion">expires ${esc(f.expires_at.slice(0, 10))}</span>` : ""}
       </div>`).join("");
 
@@ -1836,7 +1974,8 @@ async function loadTree() {
         <span class="twisty" data-toggle="${esc(id)}">▸</span>
         <span class="fname" data-toggle="${esc(id)}">🪣 <b>${esc(b.bucket)}</b>${
           b.bucket === r.active ? ` <span class="muted">(active)</span>` : ""}</span>
-        <span class="meta">${b.count.toLocaleString()} object(s) · ${fmtBytes(b.bytes)}</span>
+        <span class="meta">${b.count.toLocaleString()} object(s) · ${fmtBytes(b.bytes)}${b.linked
+          ? ` · +${b.linked.toLocaleString()} linked` : ""}</span>
       </div>
       <div class="kids" data-kids="${esc(id)}" hidden></div>`;
   }).join("");
@@ -1853,7 +1992,7 @@ $("#btnTrRestore").onclick = async () => {
   if (!confirm(`Request a ${$("#trTier").value} restore for ${trPrefixes.size} folder(s) and ${trKeys.size} file(s)`
       + (groups.size > 1 ? ` across ${groups.size} buckets (${[...groups.keys()].join(", ")})?` : ` in ${[...groups.keys()][0]}?`))) return;
   $("#trResult").textContent = "requesting restores…";
-  let total = 0, failed = 0;
+  let total = 0, failed = 0, linked = 0, lost = 0;
   const errors = [];
   for (const [bucket, g] of groups) {
     try {
@@ -1863,12 +2002,16 @@ $("#btnTrRestore").onclick = async () => {
       }});
       total += r.results.length;
       failed += r.results.filter(x => !x.ok).length;
+      linked += r.linked || 0;
+      lost += r.linked_missing || 0;
     } catch (e) { errors.push(`${bucket}: ${e.message}`); }
   }
+  const linkNote = (linked ? ` · covers ${linked.toLocaleString()} linked file(s) through their archived copy` : "")
+    + (lost ? ` · ${lost.toLocaleString()} linked file(s) have no archived copy any more` : "");
   $("#trResult").innerHTML = (failed || errors.length)
     ? `<span style="color:var(--err)">requested ${total}, ${failed} failed`
-      + (errors.length ? ` · ${esc(errors.join("; "))}` : "") + ` — see Restores/Logs</span>`
-    : `<span style="color:var(--ok)">✔ restore requested for ${total} object(s)</span>`;
+      + (errors.length ? ` · ${esc(errors.join("; "))}` : "") + ` — see Restores/Logs</span>${esc(linkNote)}`
+    : `<span style="color:var(--ok)">✔ restore requested for ${total} object(s)</span>${esc(linkNote)}`;
 };
 
 async function trExpiry(date) {
@@ -1945,6 +2088,7 @@ $("#btnTrDelete").onclick = async () => {
   } catch (e) { $("#trResult").textContent = "✘ " + e.message; return; }
   let warn = `PERMANENTLY DELETE ${p.count} object(s) (${fmtBytes(p.bytes)}) from ${bucket}?`;
   if (p.early_count) warn += `\n\n${p.early_count} are inside the ${p.min_days}-day minimum storage duration — you'll still be billed for up to ${p.max_early_days} more day(s).`;
+  if (p.linked_count) warn += `\n\n${p.linked_count} linked duplicate(s) elsewhere have their only archived copy among these (e.g. ${p.linked_sample[0]}). They will no longer be archived anywhere.`;
   if (p.versioning === "Enabled") warn += `\n\nBucket versioning is ENABLED: this adds delete markers; versions keep costing until purged.`;
   warn += `\n\nThis cannot be undone.`;
   if (!confirm(warn)) { $("#trResult").textContent = ""; return; }
@@ -2017,6 +2161,9 @@ $("#btnRtPreview").onclick = async () => {
       if (r.early_count) h += `<br><span style="color:var(--warn)">⚠ ${r.early_count} object(s) ` +
         `(${fmtBytes(r.early_bytes)}) are younger than the ${r.min_days}-day minimum storage ` +
         `duration — deleting them now still bills up to ${r.max_early_days} more day(s).</span>`;
+      if (r.linked_count) h += `<br><span style="color:var(--warn)">⚠ ${r.linked_count.toLocaleString()} linked ` +
+        `duplicate(s) elsewhere (e.g. <code>${esc(r.linked_sample[0])}</code>) have their only archived copy ` +
+        `among these — deleting them leaves those files archived nowhere.</span>`;
       if (r.versioning === "Enabled") h += `<br><span style="color:var(--warn)">⚠ bucket versioning is ` +
         `ENABLED — deleting adds a delete marker; old versions keep costing until purged.</span>`;
       if (r.free_from && r.free_from.free_from && !r.free_from.already_free)
@@ -2096,6 +2243,7 @@ async function rtDelete({ due }) {
     bucket = p.bucket;
     what = `${p.count} object(s) (${fmtBytes(p.bytes)}) under "${p.prefix || "(whole bucket)"}" in ${bucket}`;
     if (p.early_count) early = `\n\n${p.early_count} of them are inside the ${p.min_days}-day minimum storage duration, so you will still be billed for up to ${p.max_early_days} more day(s).`;
+    if (p.linked_count) early += `\n\n${p.linked_count} linked duplicate(s) elsewhere have their only archived copy among these (e.g. ${p.linked_sample[0]}). They will no longer be archived anywhere.`;
   }
   if (!canDeleteIn(bucket) && trPerm[bucket] === false)
     return alert(`This IAM user cannot delete from ${bucket}, and no delete role is set up.`);

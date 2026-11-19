@@ -24,8 +24,10 @@ everything it does.
   already verified (matched by key + size + mtime, then by SHA-256 if the timestamp
   changed), so interrupted uploads simply resume. With `COLDVAULT_DEDUPE=true`
   (default) a file whose exact content (SHA-256 + size) is already archived in the
-  bucket under *any* key is skipped too, and the log tells you which object it
-  duplicates — applies to both canary and manual uploads. A large file is read
+  bucket under *any* key is skipped too and **linked** to that object, so it still
+  shows, restores and downloads under its own path (see
+  [Skipped files and duplicates](#skipped-files-and-duplicates)) — applies to both
+  canary and manual uploads. A large file is read
   ahead of its upload only when a duplicate is possible at all (another archived
   object has exactly its size) or the same name was archived with the same size;
   otherwise its checksums — and its offload-manifest hash — are computed during the
@@ -599,6 +601,7 @@ calling AWS. It shows the S3 key each file would get and sorts them into:
 | **New here, but an object of the same size is already archived** | only if the content differs (duplicate check) |
 | **Being uploaded right now** by another session | no — skipped if that one archives the same content |
 | **Already archived and unchanged** | no |
+| **Linked** — identical to a file archived under another path, and unchanged | no |
 | **Other content already archived under this name from another machine** | no — refused; use another label |
 | **Excluded by name** | no |
 
@@ -611,6 +614,51 @@ Keys mirror the structure under the **common parent** of your selection, so sele
 folder produces exactly the same keys as a whole-folder upload of it, and picking two
 day folders keeps them both under the project (`Project/Day01/…`, `Project/Day02/…`).
 Already-verified and duplicate content is skipped as usual.
+
+### Skipped files and duplicates
+
+In **Sessions**, the **Skipped** count is a link: it opens the list of files that
+session skipped, filterable by reason:
+
+| Reason | Meaning |
+|---|---|
+| **Unchanged** | already archived under this path, same size and date |
+| **Same content** | archived under this path; only the date changed |
+| **Duplicate** | identical (SHA-256 + size) to a file archived under **another** path |
+| **Other session** | another session archived identical content under this path meanwhile |
+
+A duplicate isn't stored twice. ColdVault **links** it to the archived object that holds
+its bytes, which costs nothing in S3:
+
+- **Tree** shows it at its own path with a `linked → <archived path>` badge; folders
+  count linked files separately (`· +740 linked`).
+- **Restoring** it, or a folder containing it, restores the archived object.
+- **Downloads** lists it once that object is restored, and saves it under its **own**
+  path, so a downloaded folder is complete.
+- Uploading the same folder again skips a linked file without reading it, as long as
+  its size and date are unchanged and the archived copy still exists.
+- Deleting an archived object that linked files rely on warns first ("N linked
+  duplicate(s) elsewhere have their only archived copy among these"); after the delete
+  their links are removed, since nothing holds their bytes any more.
+
+**Sessions from before 1.27.0** didn't record skips, so their duplicates aren't linked.
+The skip list says how many are missing and offers two ways to link them, each showing
+what would change before you confirm:
+
+- **Link duplicates from ColdVault's log**: the master keeps the last 100,000 log lines,
+  including those forwarded by agents.
+- **Link from a file of log lines…**: e.g. from the uploading machine's own log, which
+  goes further back. On a Pi:
+  ```bash
+  grep -h "skip (duplicate content)" ~/coldvault/data/coldvault.log* > ~/duplicates.log
+  ```
+  Lines in `file  ->  s3://bucket/key` form also work.
+
+Every line is checked first. It has to be for the session's bucket and, if it has a
+timestamp, from within the session's run. Its archived copy has to be in the index.
+And the file has to really exist in the session's source folder: ColdVault asks the
+machine that uploaded it, so that machine must be online with the drive mounted. Linking
+the same lines again changes nothing.
 
 **Prefix and label** decide where the keys start:
 

@@ -326,10 +326,20 @@ class Uploader:
                 return False
             cur = db.get_file(bucket, key)
             if sha_hex and cur and cur["status"] == "verified" and cur["sha256"] == sha_hex:
-                db.bump_session(sid, skipped=1, bytes_done=size)
+                self._skip(sid, bucket, key, size, "other_session")
                 log_event("INFO", "upload",
                           f"skip (the other session archived identical content): s3://{bucket}/{key}")
                 return False
+
+    def _skip(self, sid, bucket, key, size, reason, target_key=None, sha256=None, mtime=None):
+        """Count a skipped file and record why (Sessions → skip list). A
+        duplicate is also linked to the archived copy that holds its bytes.
+        Recording is best-effort: it never fails the file."""
+        db.bump_session(sid, skipped=1, bytes_done=size)
+        try:
+            db.record_skip(sid, bucket, key, size, reason, target_key, sha256, mtime)
+        except Exception as e:
+            log_event("WARNING", "upload", f"couldn't record skip of s3://{bucket}/{key}: {e}")
 
     def _upload_one(self, sid, bucket, root, label, path, size, mtime, m_entries=None):
         if self._should_stop(sid):
@@ -347,9 +357,23 @@ class Uploader:
             if (existing and existing["status"] == "verified"
                     and existing["size"] == size
                     and abs((existing["mtime"] or 0) - mtime) < 2):
-                db.bump_session(sid, skipped=1, bytes_done=size)
+                self._skip(sid, bucket, key, size, "unchanged")
                 log_event("DEBUG", "upload", f"skip (unchanged, already verified): s3://{bucket}/{key}")
                 return
+
+            # Linked earlier to identical archived content, and unchanged since:
+            # skip without reading it again — as long as that content is still
+            # archived.
+            if not existing:
+                link = db.get_link(bucket, key)
+                if (link and link["target_status"] == "verified"
+                        and link["size"] == size and link["target_size"] == size
+                        and abs((link["mtime"] or 0) - mtime) < 2):
+                    self._skip(sid, bucket, key, size, "duplicate", link["target_key"],
+                               link["sha256"], mtime)
+                    log_event("DEBUG", "upload", f"skip (unchanged, linked to "
+                                                 f"s3://{bucket}/{link['target_key']}): {rel}")
+                    return
 
             # Read the whole file before uploading only when its checksum is
             # needed up front: a small file's single PUT carries it; an object
@@ -374,7 +398,7 @@ class Uploader:
                 if (existing and existing["status"] == "verified"
                         and existing["sha256"] == sha_hex):
                     db.upsert_file(bucket, key, mtime=mtime)
-                    db.bump_session(sid, skipped=1, bytes_done=size)
+                    self._skip(sid, bucket, key, size, "same_content")
                     log_event("INFO", "upload",
                               f"skip (same content, mtime changed): s3://{bucket}/{key}")
                     return
@@ -382,7 +406,7 @@ class Uploader:
                 if config.DEDUPE:
                     dup = db.find_duplicate(bucket, sha_hex, size, exclude_key=key)
                     if dup:
-                        db.bump_session(sid, skipped=1, bytes_done=size)
+                        self._skip(sid, bucket, key, size, "duplicate", dup["key"], sha_hex, mtime)
                         log_event("INFO", "upload",
                                   f"skip (duplicate content): {rel} is identical to "
                                   f"already-archived s3://{bucket}/{dup['key']}")

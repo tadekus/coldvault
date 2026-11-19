@@ -263,7 +263,12 @@ def preview_rows(bucket, rows, prefix=None):
     early = [r for r in rows if early_days(r) > 0]
     early_bytes = sum(int(r["size"] or 0) for r in early)
     worst = max((early_days(r) for r in early), default=0)
+    # Skipped duplicates elsewhere whose only archived copy is being deleted.
+    keys = {r["key"] for r in rows}
+    linked = [ln for ln in db.links_to(bucket, keys) if ln["key"] not in keys]
     return {
+        "linked_count": len(linked),
+        "linked_sample": [ln["key"] for ln in linked[:10]],
         "bucket": bucket, "prefix": prefix, "count": len(rows), "bytes": total,
         "early_count": len(early), "early_bytes": early_bytes, "max_early_days": worst,
         "min_days": min_days_for(config.STORAGE_CLASS),
@@ -322,6 +327,12 @@ def delete(bucket, rows, reason, mode, creds=None):
             ed = early_days(row)
             db.record_deletion(row, reason, mode, ed)
             db.drop_file(bucket, k)
+            dropped = db.drop_links_to(bucket, k)
+            if dropped:
+                report["unlinked"] = report.get("unlinked", 0) + dropped
+                log_event("WARNING", "retention",
+                          f"{dropped} linked duplicate(s) of s3://{bucket}/{k} are no "
+                          f"longer archived anywhere — their links were removed")
             report["deleted"] += 1
             report["bytes"] += int(row["size"] or 0)
             report["early"] += 1 if ed else 0

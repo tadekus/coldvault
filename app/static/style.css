@@ -193,3 +193,17 @@ label { color: var(--muted); font-size: 13px; }
 .modal .mlist .to { color: var(--accent); }
 .modal .mbtns { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px;
   border-top: 1px solid var(--border); }
+
+/* Skipped files of a session (Sessions → skip count) */
+.modal.wide { width: min(1100px, 100%); }
+.modal .skreasons { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.modal .skreasons > div { flex-basis: 100%; }
+.modal .sknote { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  background: var(--panel2); margin-bottom: 10px; }
+.modal .sktable td.key { word-break: break-all; }
+.modal .skmore { margin-top: 8px; }
+label.button { display: inline-block; padding: 7px 10px; border-radius: 6px; font-size: 14px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
+label.button:hover { filter: brightness(1.2); }
+/* A linked file in the Tree: stored once, under another path */
+.chip.linked { background: var(--panel2); color: var(--accent); border: 1px dashed var(--accent-dim); }

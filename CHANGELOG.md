@@ -4,6 +4,28 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.27.0
+
+- **See which files a session skipped, and why.** In **Sessions**, the Skipped count
+  opens a list of every skipped file with its reason: unchanged, same content (only
+  the date changed), duplicate of a file archived under another path, or archived
+  meanwhile by another session. Works for agents too.
+- **Duplicates are linked, not lost from their folder.** A file skipped as a duplicate
+  is recorded at its own path, linked to the archived object holding its bytes (no
+  extra S3 storage).
+  - Tree shows it with a `linked` badge, and folder counts show linked files apart.
+  - Restoring it, or its folder, restores the archived object.
+  - Downloads saves it under its own path, so a restored folder comes back complete.
+  - The upload preview lists unchanged linked files as skipped, and a re-run skips them
+    without reading them again.
+  - Deleting an archived object that linked files rely on warns first, and removes
+    their links afterwards.
+- **Link duplicates from older sessions.** For sessions from before this version, the
+  skip list can link duplicates from ColdVault's log or from an uploaded file of log
+  lines (e.g. grep'd on the Pi). It previews first, and checks each line against the
+  session's bucket, run time and the index, and that the file really exists in the
+  session's source folder on the uploading machine.
+
 ## 1.26.0
 
 - **Report emails list only this session's manifest mismatches.** An offload-manifest

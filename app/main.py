@@ -23,6 +23,7 @@ import buckets as buckets_mod  # noqa: E402
 import db  # noqa: E402
 import downloader as downloader_mod  # noqa: E402
 import drives  # noqa: E402
+import dup_import  # noqa: E402
 import eject  # noqa: E402
 import editlist  # noqa: E402
 import localfs  # noqa: E402
@@ -634,13 +635,23 @@ def api_tree():
     bucket = request.args.get("bucket") or config.BUCKET
     prefix = request.args.get("prefix") or ""
     folders, files = db.tree_children(bucket, prefix)
+    lfolders, lfiles = db.tree_links(bucket, prefix)
+    # Linked files (skipped duplicates) show at their own path; folder counts
+    # and sizes stay what is actually stored, with linked files counted apart.
+    out = {f["name"]: {"name": f["name"], "prefix": prefix + f["name"], "count": f["c"],
+                       "bytes": f["b"], "linked": 0} for f in folders}
+    for f in lfolders:
+        out.setdefault(f["name"], {"name": f["name"], "prefix": prefix + f["name"],
+                                   "count": 0, "bytes": 0, "linked": 0})["linked"] = f["c"]
+    rows = [{"key": f["key"], "name": f["key"][len(prefix):], "size": f["size"],
+             "status": f["status"], "manifest_state": f["manifest_state"],
+             "expires_at": f["expires_at"]} for f in files]
+    rows += [{"key": f["key"], "name": f["key"][len(prefix):], "size": f["size"],
+              "status": "linked", "target_key": f["target_key"]} for f in lfiles]
     return jsonify({
         "bucket": bucket, "prefix": prefix,
-        "folders": [{"name": f["name"], "prefix": prefix + f["name"],
-                     "count": f["c"], "bytes": f["b"]} for f in folders],
-        "files": [{"key": f["key"], "name": f["key"][len(prefix):], "size": f["size"],
-                   "status": f["status"], "manifest_state": f["manifest_state"],
-                   "expires_at": f["expires_at"]} for f in files],
+        "folders": [out[k] for k in sorted(out)],
+        "files": sorted(rows, key=lambda r: r["key"]),
     })
 
 
@@ -648,10 +659,12 @@ def api_tree():
 def api_tree_buckets():
     """Roots of the Tree view: every bucket in the index, plus the active one
     even if nothing has been indexed in it yet."""
-    rows = {r["bucket"]: {"bucket": r["bucket"], "count": r["c"], "bytes": r["b"]}
+    linked = db.linked_counts()
+    rows = {r["bucket"]: {"bucket": r["bucket"], "count": r["c"], "bytes": r["b"],
+                          "linked": linked.get(r["bucket"], 0)}
             for r in db.bucket_totals()}
     if config.BUCKET and config.BUCKET not in rows:
-        rows[config.BUCKET] = {"bucket": config.BUCKET, "count": 0, "bytes": 0}
+        rows[config.BUCKET] = {"bucket": config.BUCKET, "count": 0, "bytes": 0, "linked": 0}
     return jsonify({"buckets": sorted(rows.values(), key=lambda r: r["bucket"]),
                     "active": config.BUCKET})
 
@@ -903,6 +916,54 @@ def api_session_stop(sid):
     return jsonify({"ok": True, "was": s["status"], "location": where})
 
 
+@app.get("/api/sessions/<int:sid>/skips")
+def api_session_skips(sid):
+    """The files an upload session skipped, with why, and for a duplicate the
+    archived object holding its bytes."""
+    if not db.get_session(sid):
+        return jsonify({"error": f"no upload session #{sid}"}), 404
+    reason = request.args.get("reason") or None
+    if reason and reason not in db.SKIP_REASONS:
+        return jsonify({"error": f"unknown reason: {reason}"}), 400
+    return jsonify(db.session_skips(sid, reason, request.args.get("limit", 200),
+                                    request.args.get("offset", 0)))
+
+
+@app.post("/api/sessions/<int:sid>/link-duplicates")
+def api_link_duplicates(sid):
+    """Link the duplicates a session skipped before skips were recorded, from
+    this master's event log (source=log) or an uploaded file of log lines
+    (multipart field "file"). apply=1 links them; otherwise only a preview."""
+    s = db.get_session(sid)
+    if not s:
+        return jsonify({"error": f"no upload session #{sid}"}), 404
+    if s["status"] in ("queued", "scanning", "running"):
+        return jsonify({"error": "this session is still running — link its duplicates "
+                                 "once it has finished or been stopped"}), 409
+    up = request.files.get("file")
+    if up:
+        text = up.read(64 * 1024 * 1024 + 1)
+        if len(text) > 64 * 1024 * 1024:
+            return jsonify({"error": "file too large (64 MB max)"}), 413
+        entries, other = dup_import.parse(text.decode("utf-8", "replace").splitlines())
+        source = up.filename or "uploaded file"
+    else:
+        entries, other = dup_import.from_events(s), 0
+        source = "ColdVault's log"
+    apply = (request.form.get("apply") or request.args.get("apply")) in ("1", "true")
+    location = s["location"] or ""
+    r = dup_import.link(s, entries, lambda paths: _fs(location, "paths_exist", paths=paths),
+                        apply=apply)
+    r.update({"source": source, "not_duplicate_lines": other, "applied": apply})
+    if apply:
+        log_event("INFO", "upload",
+                  f"Session #{sid}: linked {r['linked']} skipped duplicate(s) from {source} "
+                  f"({r['already']} already linked, {r['target_missing']} whose archived copy "
+                  f"isn't in the index, {r['outside_session'] + r['other_bucket']} from other "
+                  f"sessions or buckets, {r['not_on_disk']} not found in the source folder)")
+    return jsonify(r)
+
+
 @app.post("/api/auto-upload")
 def api_auto_upload():
     """Switch auto-upload of canary drives on or off for one machine."""
@@ -986,20 +1047,44 @@ def api_restore():
     items = data.get("items") or []
     # A ticked folder in the tree arrives as a prefix: expand it from the index.
     prefixes = data.get("prefixes") or []
+    bucket = (data.get("bucket") or "").strip() or config.BUCKET
     if prefixes:
-        bucket = (data.get("bucket") or "").strip() or config.BUCKET
         seen = {(i.get("bucket") or bucket, i.get("key")) for i in items}
         for r in db.keys_under(bucket, prefixes, None):
             if (r["bucket"], r["key"]) not in seen:
                 items.append({"bucket": r["bucket"], "key": r["key"]})
-    if not items:
+    # A linked file (a skipped duplicate) is restored through the archived
+    # object that holds its bytes.
+    linked, broken, out, seen = 0, 0, [], set()
+    for i in items:
+        b, k = i.get("bucket") or bucket, i.get("key")
+        if not db.get_file(b, k):
+            ln = db.get_link(b, k)
+            if ln:
+                if ln["target_status"] != "verified":
+                    broken += 1
+                    continue
+                linked += 1
+                k = ln["target_key"]
+        if (b, k) not in seen:
+            seen.add((b, k))
+            out.append(dict(i, bucket=b, key=k))
+    for ln in (db.links_under(bucket, prefixes) if prefixes else []):
+        if ln["target_status"] != "verified":
+            broken += 1
+            continue
+        linked += 1
+        if (bucket, ln["target_key"]) not in seen:
+            seen.add((bucket, ln["target_key"]))
+            out.append({"bucket": bucket, "key": ln["target_key"]})
+    if not out:
         return jsonify({"error": "no objects given"}), 400
     try:
-        results = restore.request_restore(items, data.get("tier", "Bulk"),
+        results = restore.request_restore(out, data.get("tier", "Bulk"),
                                           data.get("days", 7))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify({"results": results})
+    return jsonify({"results": results, "linked": linked, "linked_missing": broken})
 
 
 @app.get("/api/restores")
@@ -1082,6 +1167,18 @@ def api_restored():
     present / deleted / none, and whether its restore window has expired."""
     location = _location(request.args.get("location"))
     items = db.restored_objects()
+    # Linked files (skipped duplicates) whose archived copy is restored can be
+    # downloaded too, to their own path: the bytes come from that copy.
+    by_bucket = {}
+    for i in items:
+        by_bucket.setdefault(i["bucket"], {})[i["key"]] = i
+    for b, restored in by_bucket.items():
+        for ln in db.links_to(b, list(restored)):
+            t = restored[ln["target_key"]]
+            items.append({"bucket": b, "key": ln["key"], "source_key": ln["target_key"],
+                          "tier": t["tier"], "expiry": t["expiry"],
+                          "requested_at": t["requested_at"], "size": t["size"],
+                          "sha256": t["sha256"], "file_status": "linked"})
     dmap = db.latest_downloads_map(location)
     ok = ("verified", "downloaded", "skipped")
     claimed = [d["local_path"] for d in dmap.values() if d["status"] in ok]

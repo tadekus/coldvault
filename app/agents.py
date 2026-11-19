@@ -260,6 +260,20 @@ class Hub:
         self._own(db.session_location, sid, name, "upload session")
         db.bump_session(sid, **kw)
 
+    def _record_skip(self, name, sid, bucket, key, size, reason, target_key=None,
+                     sha256=None, mtime=None):
+        self._own(db.session_location, sid, name, "upload session")
+        if reason not in db.SKIP_REASONS:
+            raise AgentError(f"unknown skip reason: {reason}", 400)
+        if bucket != (db.get_session(sid) or {}).get("bucket"):
+            raise AgentError(f"session #{sid} doesn't upload to {bucket}", 403)
+        if reason == "duplicate":   # a link may only point at archived content
+            t = db.get_file(bucket, target_key) if target_key else None
+            if not t or t["status"] != "verified" or t["size"] != size:
+                raise AgentError(f"s3://{bucket}/{target_key} isn't an archived "
+                                 f"object of that size", 403)
+        db.record_skip(sid, bucket, key, size, reason, target_key, sha256, mtime)
+
     def _claim(self, name, bucket, key, sid, sha256=None, **fields):
         self._own(db.session_location, sid, name, "upload session")
         _cols(fields, ("size", "local_path", "mtime", "storage_class"), "claim_upload")
@@ -312,6 +326,8 @@ class Hub:
             db.find_duplicate(bucket, sha, size, exclude_key),
         "size_taken": lambda self, name, bucket, size, exclude_key:
             db.size_taken(bucket, size, exclude_key),
+        "record_skip": _record_skip,
+        "get_link": lambda self, name, bucket, key: db.get_link(bucket, key),
         "find_keys_any_bucket": lambda self, name, keys: db.find_keys_any_bucket(keys),
         "get_dl_session": _get_dl_session,
         "update_dl_session": _update_dl_session,

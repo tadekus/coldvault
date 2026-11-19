@@ -200,7 +200,8 @@ class Downloader:
         """Master: queue a download of `items` ([{"bucket", "key", "size",
         "sha256"}, …]) into `dest` on this machine, or on agent `location` —
         which picks it up at its next check-in."""
-        items = [{k: i.get(k) for k in ("bucket", "key", "size", "sha256")} for i in items]
+        items = [{k: i.get(k) for k in ("bucket", "key", "size", "sha256", "source_key")}
+                 for i in items]
         sid = db.create_dl_session(dest, location=location, items=items)
         total_bytes = sum(int(i.get("size") or 0) for i in items)
         db.update_dl_session(sid, total_files=len(items), total_bytes=total_bytes)
@@ -249,6 +250,9 @@ class Downloader:
 
     def _one(self, sid, dest, item):
         bucket, key = item["bucket"], item["key"]
+        # A linked file (a skipped duplicate) is saved under its own key, with
+        # the bytes of the archived object that holds its content.
+        obj = item.get("source_key") or key
         expected_sha = item.get("sha256")
         did = None
         try:
@@ -267,7 +271,7 @@ class Downloader:
                                   f"skip (already downloaded): {path}")
                         return
 
-            head = awsapi.s3api("head-object", "--bucket", bucket, "--key", key, log=False)
+            head = awsapi.s3api("head-object", "--bucket", bucket, "--key", obj, log=False)
             size = int(head.get("ContentLength") or size or 0)
             restore_hdr = head.get("Restore") or ""
             storage = head.get("StorageClass") or ""
@@ -283,9 +287,9 @@ class Downloader:
 
             t0 = time.monotonic()
             if size and size > config.DOWNLOAD_PART_SIZE:
-                self._ranged(sid, bucket, key, path, size)
+                self._ranged(sid, bucket, obj, path, size)
             else:
-                awsapi.s3api("get-object", "--bucket", bucket, "--key", key, path)
+                awsapi.s3api("get-object", "--bucket", bucket, "--key", obj, path)
                 db.bump_dl_session(sid, bytes_done=size)
             elapsed = max(time.monotonic() - t0, 1e-6)
 
@@ -297,7 +301,7 @@ class Downloader:
             # at upload, if any — computed in the same read pass as SHA-256. This
             # is a true byte-level check that the restored copy matches what the
             # DIT recorded at offload.
-            frow = db.get_file(bucket, key) if config.MANIFEST_CHECK else None
+            frow = db.get_file(bucket, obj) if config.MANIFEST_CHECK else None
             m_algo = (frow or {}).get("manifest_algo")
             m_expected = (frow or {}).get("manifest_hash")
             want = m_algo if m_expected else None

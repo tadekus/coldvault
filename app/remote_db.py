@@ -133,6 +133,16 @@ def size_taken(bucket, size, exclude_key):
     return _call("size_taken", bucket, size, exclude_key)
 
 
+def record_skip(session_id, bucket, key, size, reason, target_key=None,
+                sha256=None, mtime=None):
+    return _call("record_skip", session_id, bucket, key, size, reason, target_key,
+                 sha256, mtime)
+
+
+def get_link(bucket, key):
+    return _call("get_link", bucket, key)
+
+
 def claim_upload(bucket, key, sid, **fields):
     return _call("claim_upload", bucket, key, sid, **fields)
 

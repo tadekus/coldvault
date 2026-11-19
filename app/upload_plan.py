@@ -26,13 +26,18 @@ GROUPS = [
     ("busy", "no", "Being uploaded right now by another session — waits, then skips "
                    "if that one archived the same content"),
     ("skip", "no", "Already archived and unchanged — skipped"),
+    ("linked", "no", "Identical to a file archived under another path (a duplicate, linked "
+                     "to it) and unchanged — skipped; restoring this path uses that copy"),
     ("conflict", "no", "Different content is already archived under this name from another "
                        "machine — refused, nothing is overwritten (use another label)"),
 ]
 
 
-def _group(r, size, mtime, location, dup_key, key):
+def _group(r, size, mtime, location, dup_key, key, link=None):
     """Which group a file falls in, and a short note for it."""
+    if not r and link and link["target_status"] == "verified" and link["size"] == size \
+            and abs((link["mtime"] or 0) - mtime) < 2:
+        return "linked", f"stored as {link['target_key']}"
     if r and r["status"] == "verified":
         other = (r["s_location"] or "") != (location or "") and r["session_id"] is not None
         where = r["s_location"] or config.NAME
@@ -61,11 +66,13 @@ def classify(bucket, label, location, plan):
     files = plan["files"]
     keys = [make_key(label, rel) for rel, _, _ in files]
     rows = db.preview_rows(bucket, keys)
+    links = db.links_map(bucket, keys)
     sizes = db.verified_sizes(bucket) if config.DEDUPE else {}
     out = {gid: {"id": gid, "uploads": up, "title": title, "count": 0, "bytes": 0, "files": []}
            for gid, up, title in GROUPS}
     for (rel, size, mtime), key in zip(files, keys):
-        gid, note = _group(rows.get(key), size, mtime, location, sizes.get(size), key)
+        gid, note = _group(rows.get(key), size, mtime, location, sizes.get(size), key,
+                           links.get(key))
         g = out[gid]
         g["count"] += 1
         g["bytes"] += size
