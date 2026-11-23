@@ -617,8 +617,26 @@ def match_files_by_name(bucket, name):
 
 def files_for_audit(bucket):
     """All index rows for a bucket that represent objects expected in S3."""
-    return _rows("SELECT id, key, size, storage_class, status FROM files "
-                 "WHERE bucket=? AND status IN ('verified','remote')", (bucket,))
+    return _rows("SELECT id, key, size, storage_class, status, verified_at, uploaded_at "
+                 "FROM files WHERE bucket=? AND status IN ('verified','remote')", (bucket,))
+
+
+def set_audit_many(updates):
+    """[(state, when, file_id)] in one transaction — an audit of a big bucket
+    would otherwise commit once per object."""
+    with _lock:
+        _conn.executemany("UPDATE files SET audit_state=?, audited_at=? WHERE id=?", updates)
+        _conn.commit()
+
+
+def drop_remote_under(bucket, prefixes):
+    """Forget imported (never uploaded by ColdVault) rows under `prefixes` —
+    e.g. access logs an earlier audit imported. Index only; S3 is untouched."""
+    n = 0
+    for p in prefixes:
+        n += _exec("DELETE FROM files WHERE bucket=? AND status='remote' "
+                   "AND key LIKE ? ESCAPE '\\'", (bucket, f"{_esc_like(p)}%")).rowcount
+    return n
 
 
 def set_audit(file_id, state, when):

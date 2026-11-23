@@ -4,6 +4,24 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.28.0
+
+- **Fixed: repeated report emails for one finished session.** The post-upload audit ran
+  inside the agent's "session finished" call. On a big bucket it takes many minutes, so
+  the agent timed out and retried, and every retry started another full audit and
+  email. Now the report runs in the background, once per session, and a retried call
+  doesn't trigger it again. A master-run session also no longer holds up the next
+  upload while its report is built.
+- **Fixed: files uploaded during an audit were reported missing.** The audit compares
+  a listing of the bucket with the index; a file archived after the listing started
+  can't be in it. Those are now left for the next audit instead of being flagged.
+- **Access logs aren't archive content.** New `COLDVAULT_AUDIT_IGNORE` (default
+  `access-logs/`): objects under it that ColdVault didn't upload are not imported,
+  counted, or flagged as wrong storage class. Earlier imports of them are removed from
+  the index. The report shows how many were ignored.
+- The audit writes its results in one transaction, which is much faster on buckets
+  with hundreds of thousands of objects.
+
 ## 1.27.0
 
 - **See which files a session skipped, and why.** In **Sessions**, the Skipped count

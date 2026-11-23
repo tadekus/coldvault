@@ -116,6 +116,9 @@ def upload_report_html(session, audit, m_new=(), m_new_count=0):
         _row("Skipped (unchanged/dupe)", s.get("skipped_files", 0)),
         _row("Failed", s.get("failed_files", 0)),
         _row("Bucket now holds", f'{audit["in_bucket"]} objects · {_fmt_bytes(audit["bucket_bytes"])}'),
+        *([_row("Not archive (ignored)", f'{audit["ignored"]} objects under '
+                f'{", ".join(audit.get("ignored_prefixes") or [])} · {_fmt_bytes(audit.get("ignored_bytes"))}')]
+          if audit.get("ignored") else []),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '
                       f'{audit["size_mismatch_count"]} size-mismatch · {audit["class_drift_count"]} class-drift'),
         _manifest_row(audit, m_new_count),
@@ -165,6 +168,8 @@ def audit_report_html(audit):
     rows = "".join([
         _row("Bucket", f's3://{audit["bucket"]}'),
         _row("Bucket holds", f'{audit["in_bucket"]} objects · {_fmt_bytes(audit["bucket_bytes"])}'),
+        *([_row("Not archive (ignored)", f'{audit["ignored"]} objects under '
+                f'{", ".join(audit.get("ignored_prefixes") or [])}')] if audit.get("ignored") else []),
         _row("Indexed", audit["in_index"]),
         _row("Imported this run", audit["imported"]),
         _row("Audit", f'{audit["ok"]} verified · {audit["missing_count"]} missing · '

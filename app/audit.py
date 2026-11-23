@@ -15,8 +15,12 @@ def run_audit(bucket=None):
     missing / size-mismatch / class-drift objects, imports bucket-only objects,
     and returns a report dict. Raises awsapi.AwsError on listing failure."""
     bucket = bucket or config.BUCKET
+    ignore = tuple(config.AUDIT_IGNORE)
+    # Anything archived after the listing starts can't be in it: not "missing".
+    started = db.now()
     remote = {}
     total_bytes = 0
+    ignored, ignored_bytes = 0, 0
     for obj in awsapi.list_all_objects(bucket, config.PREFIX):
         if obj["Key"].endswith("/"):
             continue
@@ -24,27 +28,40 @@ def run_audit(bucket=None):
         total_bytes += int(obj.get("Size") or 0)
 
     with _lock:
+        dropped = db.drop_remote_under(bucket, ignore) if ignore else 0
         db.clear_audit(bucket)
         when = db.now()
         indexed = db.files_for_audit(bucket)
         indexed_keys = {r["key"] for r in indexed}
-        missing, size_mismatch, class_drift, ok = [], [], [], 0
+        # Not archive content (e.g. access logs) and not uploaded by ColdVault:
+        # leave it out of everything below.
+        for key in [k for k in remote if k.startswith(ignore) and k not in indexed_keys] \
+                if ignore else []:
+            ignored += 1
+            ignored_bytes += int(remote.pop(key).get("Size") or 0)
+        total_bytes -= ignored_bytes
+        missing, size_mismatch, class_drift, ok, newer = [], [], [], 0, 0
+        updates = []
 
         for r in indexed:
             obj = remote.get(r["key"])
             if obj is None:
-                db.set_audit(r["id"], "missing", when)
+                if (r["verified_at"] or r["uploaded_at"] or "") >= started:
+                    newer += 1   # archived while the bucket was being listed
+                    continue
+                updates.append(("missing", when, r["id"]))
                 missing.append(r["key"])
             elif r["size"] is not None and obj.get("Size") is not None \
                     and int(r["size"]) != int(obj["Size"]):
-                db.set_audit(r["id"], "size_mismatch", when)
+                updates.append(("size_mismatch", when, r["id"]))
                 size_mismatch.append({"key": r["key"], "index": r["size"], "bucket": obj["Size"]})
             elif obj.get("StorageClass") and obj["StorageClass"] != config.STORAGE_CLASS:
-                db.set_audit(r["id"], "class_drift", when)
+                updates.append(("class_drift", when, r["id"]))
                 class_drift.append({"key": r["key"], "class": obj["StorageClass"]})
             else:
-                db.set_audit(r["id"], "ok", when)
+                updates.append(("ok", when, r["id"]))
                 ok += 1
+        db.set_audit_many(updates)
 
         imported = 0
         for key, obj in remote.items():
@@ -72,7 +89,11 @@ def run_audit(bucket=None):
               f"{len(size_mismatch)} size mismatch, {len(class_drift)} class drift, "
               f"{m_mismatch} manifest mismatch ({m_ok} manifest-verified, "
               f"{m_accepted} accepted mismatch), "
-              f"{imported} imported ({len(remote)} objects in bucket)")
+              f"{imported} imported ({len(remote)} objects in bucket"
+              + (f", {ignored} ignored under {', '.join(ignore)}" if ignored else "")
+              + (f", {newer} archived during the audit" if newer else "")
+              + (f"; {dropped} previously imported ignored object(s) removed from the index"
+                 if dropped else "") + ")")
     for k in missing:
         log_event("ERROR", "audit", f"MISSING from bucket (index says archived): {k}")
     for m in size_mismatch:
@@ -92,4 +113,6 @@ def run_audit(bucket=None):
         "manifest_ok": m_ok, "manifest_mismatch_count": m_mismatch,
         "manifest_not_listed": m_not_listed, "manifest_mismatch": m_keys[:200],
         "manifest_accepted": m_accepted,
+        "ignored": ignored, "ignored_bytes": ignored_bytes, "ignored_prefixes": list(ignore),
+        "newer": newer,
     }

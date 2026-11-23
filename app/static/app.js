@@ -324,6 +324,8 @@ $("#btnAudit").onclick = async () => {
       : `<span style="color:var(--ok)">✔ all good</span> — `;
     msg += `${r.ok} verified in bucket, ${r.in_bucket} objects total`;
     if (r.imported) msg += `, ${r.imported} newly imported`;
+    if (r.ignored) msg += `<br><span class="muted">${r.ignored.toLocaleString()} object(s) under ${esc((r.ignored_prefixes || []).join(", "))} ignored — not archive content (COLDVAULT_AUDIT_IGNORE)</span>`;
+    if (r.newer) msg += `<br><span class="muted">${r.newer.toLocaleString()} file(s) archived while the audit ran — checked next time</span>`;
     if (r.missing_count) msg += `<br><span style="color:var(--err)">${r.missing_count} MISSING from bucket</span>` +
       (r.missing.length ? `: <span class="mono" style="font-size:11px">${r.missing.slice(0,10).map(esc).join(", ")}${r.missing_count>10?" …":""}</span>` : "");
     if (r.size_mismatch_count) msg += `<br><span style="color:var(--warn)">${r.size_mismatch_count} size mismatch</span>`;

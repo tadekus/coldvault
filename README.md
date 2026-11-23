@@ -1012,6 +1012,13 @@ next to Import) reconciles the index against the actual bucket contents:
   mismatch**, and any object not in the expected storage class (**class drift**).
 - Imports objects found in the bucket but not yet in the index (same as
   *Import bucket → index*).
+- Leaves out objects under `COLDVAULT_AUDIT_IGNORE` prefixes (default `access-logs/`)
+  that ColdVault didn't upload itself: S3 server access logs delivered into the same
+  bucket aren't archive content, so they're not imported, counted or flagged as class
+  drift. The report names how many it ignored, and earlier imports of them are dropped
+  from the index (S3 is untouched). Set it to an empty value to audit everything.
+- A file archived **while the audit runs** (e.g. an upload still in progress) can't be
+  in the listing, so it isn't flagged missing; the next audit checks it.
 
 Results are summarised on the dashboard, each flagged object gets a badge in the
 **Index** tab (`missing` / `size_mismatch` / `class_drift`), and everything is written
@@ -1019,7 +1026,13 @@ to the log under the `audit` category — a `missing` object is logged at ERROR 
 it stands out. Re-running the audit refreshes all badges, so once you've fixed
 something (e.g. re-uploaded a missing file) the flag clears. The audit reads object
 metadata only (`list-objects-v2`); it does not restore or download anything, so it is
-cheap to run and safe on Deep Archive data.
+cheap to run and safe on Deep Archive data. On a bucket with hundreds of thousands of
+objects it takes a few minutes, so the post-upload report runs in the background, once
+per finished session.
+
+S3 itself discourages delivering a bucket's access logs **into the same bucket**: each
+log delivery is itself a request that gets logged. Prefer a separate log bucket with a
+lifecycle rule that expires old logs.
 
 ## Email notifications (Resend)
 

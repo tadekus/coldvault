@@ -9,7 +9,9 @@ if config.ROLE == "agent":
     raise SystemExit(0)
 
 import os  # noqa: E402
+import queue  # noqa: E402
 import tempfile  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -51,6 +53,34 @@ down = downloader_mod.Downloader()
 EMAIL_TRIGGERS = ("canary", "manual")
 
 
+# The report (a full bucket audit, then an email) can take many minutes on a
+# big bucket, so it runs on its own thread — never inside the uploader or an
+# agent's request — and at most once per session.
+_reports = queue.Queue()
+_reported = set()
+_reported_lock = threading.Lock()
+
+
+def _queue_report(sid):
+    with _reported_lock:
+        if sid in _reported:
+            return
+        _reported.add(sid)
+    _reports.put(sid)
+
+
+def _report_worker():
+    while True:
+        sid = _reports.get()
+        try:
+            notify.notify_upload_complete(sid)
+        except Exception as e:   # notify logs its own failures; this is a backstop
+            log_event("ERROR", "notify", f"report for session #{sid} failed: {e}")
+
+
+threading.Thread(target=_report_worker, daemon=True, name="reports").start()
+
+
 def _after_upload(sid, trigger):
     """A session this master ran itself has finished."""
     s = db.get_session(sid)
@@ -59,7 +89,7 @@ def _after_upload(sid, trigger):
     if trigger == "canary":
         eject.after_session(db.get_session(sid), busy=up.queue_size() > 0)
     if trigger in EMAIL_TRIGGERS and config.NOTIFY:
-        notify.notify_upload_complete(sid)
+        _queue_report(sid)
 
 
 def _after_agent_upload(sid):
@@ -67,7 +97,7 @@ def _after_agent_upload(sid):
     business (its drive, its host); the report email is the master's."""
     s = db.get_session(sid)
     if s and s["trigger"] in EMAIL_TRIGGERS and s["status"] != "stopped" and config.NOTIFY:
-        notify.notify_upload_complete(sid)
+        _queue_report(sid)
 
 
 up.on_session_done = _after_upload

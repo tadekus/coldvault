@@ -249,8 +249,11 @@ class Hub:
     def _update_session(self, name, sid, **kw):
         self._own(db.session_location, sid, name, "upload session")
         _cols(kw, ("status", "total_files", "total_bytes", "finished_at"), "update_session")
+        was = (db.get_session(sid) or {}).get("status")
         db.update_session(sid, **kw)
-        if kw.get("status") in FINISHED:
+        # Only when it actually finishes now: a retried call (the agent didn't
+        # get the answer in time) must not run the after-session step again.
+        if kw.get("status") in FINISHED and was not in FINISHED:
             try:
                 self.on_session_finished(sid)
             except Exception as e:

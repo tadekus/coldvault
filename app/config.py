@@ -152,6 +152,11 @@ TMP_DIR = os.path.join(DATA_DIR, "tmp")
 DB_PATH = os.path.join(DATA_DIR, "coldvault.db")
 LOG_PATH = os.path.join(DATA_DIR, "coldvault.log")
 
+# Key prefixes in the bucket that aren't archive content — e.g. S3 server
+# access logs delivered into the same bucket. The audit doesn't import, count or
+# check objects there (anything ColdVault itself uploaded is still checked).
+AUDIT_IGNORE = [p.lstrip("/") for p in _csv("COLDVAULT_AUDIT_IGNORE", "access-logs/")]
+
 EXCLUDES = _csv(
     "COLDVAULT_EXCLUDE",
     ".Trashes,.Trash-*,.Spotlight-V100,System Volume Information,"
