@@ -1123,6 +1123,8 @@ def api_sessions():
             e = _eta(s)
             if e:
                 s["speed_bps"], s["eta_seconds"], s["speed_basis"] = e
+            else:
+                s["speed_basis"] = "measuring"
     return jsonify(rows)
 
 

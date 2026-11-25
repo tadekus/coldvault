@@ -1221,7 +1221,13 @@ function fmtDuration(sec) {
 // Speed of what was actually uploaded (skipped files don't count) and the time
 // left at that speed. Files still ahead may turn out to be skips, so it can end sooner.
 function etaLine(s) {
+  const line = (txt, title) => `<div class="muted mono" style="font-size:11px;margin-top:2px" title="${esc(title)}">${txt}</div>`;
+  if (s.speed_basis === "measuring")
+    return line("measuring speed…", "Shown once this session has uploaded for a couple of minutes. Skipped files don't count.");
   if (s.speed_bps == null) return "";
+  if (!s.speed_bps)
+    return line(`nothing uploaded in the ${esc(s.speed_basis)}`,
+      "Only bytes actually sent count. While a session goes through files that are already archived, nothing is uploaded — or a large file is being read before its upload.");
   const when = s.eta_seconds != null ? new Date(Date.now() + s.eta_seconds * 1000) : null;
   const at = when && when.toLocaleString([], {
     weekday: s.eta_seconds > 20 * 3600 ? "short" : undefined, hour: "2-digit", minute: "2-digit" });

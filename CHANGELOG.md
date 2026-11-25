@@ -4,6 +4,12 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.29.1
+
+- Sessions: a running session shows "measuring speed…" until there are a couple of
+  minutes of uploads to go by, and "nothing uploaded in the last … min" (instead of
+  "stalled") while it is only going through files that are already archived.
+
 ## 1.29.0
 
 - **Speed and time left for running sessions.** Under the progress bar in Sessions:
