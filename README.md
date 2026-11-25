@@ -615,6 +615,20 @@ folder produces exactly the same keys as a whole-folder upload of it, and pickin
 day folders keeps them both under the project (`Project/Day01/…`, `Project/Day02/…`).
 Already-verified and duplicate content is skipped as usual.
 
+### Speed and time left
+
+A running session shows a second line under its progress bar, e.g.
+`48 MB/s · ~3 h 20 min left (Thu 14:05)`:
+
+- **Speed** counts only bytes actually uploaded, averaged over the last 15 minutes.
+  Skipped files add their size to the progress instantly, so they're left out.
+  Right after a session starts, or after the master restarts, it uses the session's
+  average until a couple of minutes of data are in.
+- **Time left** is the remaining size at that speed. Files still ahead may turn out to
+  be already archived or duplicates, so the session can finish sooner.
+- It costs nothing on the uploading machine: the master notes each running session's
+  uploaded bytes once a minute.
+
 ### Skipped files and duplicates
 
 In **Sessions**, the **Skipped** count is a link: it opens the list of files that

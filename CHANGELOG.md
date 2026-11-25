@@ -4,6 +4,14 @@ All notable changes to ColdVault. Versions follow `MAJOR.MINOR.PATCH`
 (PATCH = fixes/tweaks, MINOR = features, MAJOR = breaking). The running version is
 in [`app/version.py`](app/version.py) and shown in the web UI header.
 
+## 1.29.0
+
+- **Speed and time left for running sessions.** Under the progress bar in Sessions:
+  upload speed over the last 15 minutes and the time left at that speed, with the
+  expected finish time. Only bytes actually uploaded count, so skipped files don't
+  inflate it. The master samples each running session once a minute; nothing extra
+  runs on the uploading machine.
+
 ## 1.28.0
 
 - **Fixed: repeated report emails for one finished session.** The post-upload audit ran

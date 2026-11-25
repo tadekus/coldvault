@@ -280,6 +280,8 @@ def _ensure_columns():
     for table, col, decl in (("sessions", "location", "TEXT DEFAULT ''"),
                              ("sessions", "items", "TEXT"),
                              ("sessions", "prefix", "TEXT"),
+                             # bytes actually sent to S3 (done_bytes also counts skips)
+                             ("sessions", "uploaded_bytes", "INTEGER DEFAULT 0"),
                              ("dl_sessions", "location", "TEXT DEFAULT ''"),
                              ("dl_sessions", "items", "TEXT")):
         cols = [r[1] for r in _conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -442,8 +444,9 @@ def stop_session(sid):
 
 def bump_session(sid, done=0, skipped=0, failed=0, bytes_done=0):
     _exec("""UPDATE sessions SET done_files=done_files+?, skipped_files=skipped_files+?,
-             failed_files=failed_files+?, done_bytes=done_bytes+? WHERE id=?""",
-          (done, skipped, failed, bytes_done, sid))
+             failed_files=failed_files+?, done_bytes=done_bytes+?,
+             uploaded_bytes=COALESCE(uploaded_bytes,0)+? WHERE id=?""",
+          (done, skipped, failed, bytes_done, 0 if skipped else bytes_done, sid))
 
 
 def get_session(sid):

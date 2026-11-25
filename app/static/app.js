@@ -1211,6 +1211,25 @@ async function pollManifestJobs() {
 }
 
 /* ---------- sessions ---------- */
+function fmtDuration(sec) {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${Math.max(1, m)} min`;
+  const h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d ? `${d} d ${h % 24} h` : `${h} h ${m % 60} min`;
+}
+
+// Speed of what was actually uploaded (skipped files don't count) and the time
+// left at that speed. Files still ahead may turn out to be skips, so it can end sooner.
+function etaLine(s) {
+  if (s.speed_bps == null) return "";
+  const when = s.eta_seconds != null ? new Date(Date.now() + s.eta_seconds * 1000) : null;
+  const at = when && when.toLocaleString([], {
+    weekday: s.eta_seconds > 20 * 3600 ? "short" : undefined, hour: "2-digit", minute: "2-digit" });
+  return `<div class="muted mono" style="font-size:11px;margin-top:2px"
+      title="Upload speed over the ${esc(s.speed_basis)} (skipped files don't count). Files still ahead may turn out to be already archived, so it can finish sooner.">
+      ${fmtBytes(s.speed_bps)}/s · ${s.eta_seconds != null ? `~${fmtDuration(s.eta_seconds)} left (${esc(at)})` : "stalled"}</div>`;
+}
+
 async function loadSessions() {
   const rows = await api("/api/sessions");
   $("#sessionsTable tbody").innerHTML = rows.map(s => {
@@ -1224,7 +1243,7 @@ async function loadSessions() {
       <td>${esc(s.trigger)}</td>
       <td>${chip(s.status)}</td>
       <td><div class="progress"><i style="width:${pct}%"></i></div>
-          <span class="mono">${s.done_files} up${s.skipped_files ? ` · ${s.skipped_files} skip` : ""}${s.failed_files ? ` · ${s.failed_files} fail` : ""} / ${s.total_files} files · ${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)} (${pct}%)</span></td>
+          <span class="mono">${s.done_files} up${s.skipped_files ? ` · ${s.skipped_files} skip` : ""}${s.failed_files ? ` · ${s.failed_files} fail` : ""} / ${s.total_files} files · ${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)} (${pct}%)</span>${etaLine(s)}</td>
       <td class="num">${s.done_files}</td>
       <td class="num">${s.skipped_files
         ? `<a href="#" class="sessSkips" data-id="${s.id}" title="which files were skipped, and why">${s.skipped_files}</a>`

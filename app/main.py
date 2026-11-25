@@ -8,6 +8,7 @@ if config.ROLE == "agent":
     agent.main()
     raise SystemExit(0)
 
+import collections  # noqa: E402
 import os  # noqa: E402
 import queue  # noqa: E402
 import tempfile  # noqa: E402
@@ -1066,9 +1067,63 @@ def api_agent_events():
     return jsonify({"ok": True})
 
 
+# Upload speed per running session, for the ETA in Sessions: once a minute,
+# how many bytes each running session has actually sent (skips don't count).
+# One small query a minute here; nothing at all on the machine uploading.
+SPEED_WINDOW = 15 * 60
+_speed = {}   # sid -> deque[(time, uploaded_bytes)]
+
+
+def _speed_sampler():
+    while True:
+        try:
+            now, running = time.time(), {}
+            for s in db.list_sessions():
+                if s["status"] == "running":
+                    running[s["id"]] = s.get("uploaded_bytes") or 0
+            for sid in list(_speed):
+                if sid not in running:
+                    del _speed[sid]
+            for sid, b in running.items():
+                d = _speed.setdefault(sid, collections.deque(maxlen=SPEED_WINDOW // 60 + 2))
+                d.append((now, b))
+        except Exception:
+            pass
+        time.sleep(60)
+
+
+threading.Thread(target=_speed_sampler, daemon=True, name="speed").start()
+
+
+def _eta(s):
+    """(bytes per second, seconds left, how the speed was measured) for a
+    running session, or None while there's nothing to go by yet."""
+    now, sent = time.time(), s.get("uploaded_bytes") or 0
+    pts = [p for p in _speed.get(s["id"], ()) if now - p[0] <= SPEED_WINDOW]
+    if pts and now - pts[0][0] >= 120:
+        rate, basis = (sent - pts[0][1]) / (now - pts[0][0]), \
+            f"last {round((now - pts[0][0]) / 60)} min"
+    else:   # just started, or the master just restarted: the session's average
+        try:
+            elapsed = now - time.mktime(time.strptime(s["started_at"], db.TIME_FMT))
+        except (TypeError, ValueError):
+            return None
+        if elapsed < 120 or sent <= 0:
+            return None
+        rate, basis = sent / elapsed, "session average"
+    left = max(0, (s.get("total_bytes") or 0) - (s.get("done_bytes") or 0))
+    return rate, (left / rate if rate > 0 else None), basis
+
+
 @app.get("/api/sessions")
 def api_sessions():
-    return jsonify(db.list_sessions())
+    rows = db.list_sessions()
+    for s in rows:
+        if s["status"] == "running":
+            e = _eta(s)
+            if e:
+                s["speed_bps"], s["eta_seconds"], s["speed_basis"] = e
+    return jsonify(rows)
 
 
 @app.post("/api/restore")
